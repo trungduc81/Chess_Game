@@ -1,0 +1,23 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "java",
+      "name": "1. Server Main",
+      "request": "launch",
+      "mainClass": "vn.edu.ltm.chess.server.ServerMain",
+      "projectName": "btl-chess",
+      "cwd": "${workspaceFolder}",
+      "vmArgs": "-Dchess.env=.env"
+    },
+    {
+      "type": "java",
+      "name": "2. Client JavaFX",
+      "request": "launch",
+      "mainClass": "vn.edu.ltm.chess.client.ClientMain",
+      "projectName": "btl-chess",
+      "cwd": "${workspaceFolder}",
+      "vmArgs": "-Dchess.env=.env"
+    }
+  ]
+}

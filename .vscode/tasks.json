@@ -1,0 +1,32 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Maven test",
+      "type": "shell",
+      "command": "mvn",
+      "args": ["test"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "test",
+      "problemMatcher": ["$javac"]
+    },
+    {
+      "label": "Run server",
+      "type": "shell",
+      "command": "mvn",
+      "args": ["exec:java", "-Dexec.mainClass=vn.edu.ltm.chess.server.ServerMain"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Run client",
+      "type": "shell",
+      "command": "mvn",
+      "args": ["javafx:run"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": []
+    }
+  ]
+}
