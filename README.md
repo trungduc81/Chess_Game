@@ -23,10 +23,13 @@ BTL_Chess/
 ├── database/schema.sql
 ├── src/main/java/vn/edu/ltm/chess/
 │   ├── chess/       Chess Engine chạy tại Server
-│   ├── client/      NetworkClient và giao diện JavaFX
+│   ├── client/      NetworkClient và coordinator JavaFX
+│   │   └── ui/      Login, lobby, game, lịch sử/replay và xếp hạng
 │   ├── config/      Đọc .env, biến môi trường và system property
 │   ├── protocol/    Khung JSON dùng chung
-│   ├── repository/  JDBC, MySQL, ELO, lịch sử và xếp hạng
+│   ├── rating/      Công thức tính ELO
+│   ├── security/    Băm và kiểm tra mật khẩu
+│   ├── repository/  JDBC, MySQL, lịch sử và xếp hạng
 │   └── server/      TCP Server, ClientConnection và GameSession
 ├── src/test/java/   Unit test luật cờ, giao thức, ELO và concurrency
 ├── .vscode/         Cấu hình Run Server/Client trong VS Code
@@ -99,6 +102,7 @@ Server và Client là hai chương trình độc lập nên phải chạy bằng
 ## Quy ước dữ liệu
 
 - Một nước đi trong CSDL là một **ply** (một lượt của một người).
+- Mỗi frame NDJSON được giới hạn tối đa 64 KiB theo byte trước khi giải mã UTF-8.
 - Điểm kết quả: thắng 1.0, hòa 0.5, thua 0.0.
 - Điểm xếp hạng: ELO khởi tạo 1200, K=32.
 - Không lưu mật khẩu thô; mật khẩu được băm PBKDF2-HMAC-SHA256 kèm salt.

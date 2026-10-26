@@ -1,8 +1,9 @@
-package vn.edu.ltm.chess.repository;
+package vn.edu.ltm.chess.rating;
 
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class EloCalculatorTest {
     @Test void equalPlayersGainOrLoseSixteenPoints() {
@@ -14,6 +15,6 @@ class EloCalculatorTest {
     @Test void upsetVictoryGainsMoreThanExpectedVictory() {
         int underdogGain = EloCalculator.whiteDelta(1000, 1400, 1.0);
         int favoriteGain = EloCalculator.whiteDelta(1400, 1000, 1.0);
-        org.junit.jupiter.api.Assertions.assertTrue(underdogGain > favoriteGain);
+        assertTrue(underdogGain > favoriteGain);
     }
 }

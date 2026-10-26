@@ -12,11 +12,11 @@ JavaFX Client N ─┘                         │
 
 ## Client Layer
 
-`ChessClientApp` tiếp nhận thao tác và hiển thị dữ liệu. `NetworkClient` duy trì TCP, đóng gói/giải mã thông điệp và tự trả lời heartbeat. Client không tự xác nhận luật, kết quả hoặc thời gian.
+`ChessClientApp` là coordinator điều hướng và phân phối message. Các lớp `LoginView`, `LobbyView`, `GameView` và `HistoryReplayView` dựng giao diện và xử lý sự kiện cục bộ. `NetworkClient` duy trì TCP, đóng gói/giải mã thông điệp và tự trả lời heartbeat. Client không tự xác nhận luật, kết quả hoặc thời gian.
 
 ## Server Application Layer
 
-`ChessServer` nhận nhiều kết nối bằng virtual thread, xác thực khung message và định tuyến nghiệp vụ. `ClientConnection` đại diện cho một socket. `GameSession` khóa trạng thái theo từng ván để chốt chính xác nước đi và timeout. Package `chess` là Chess Engine độc lập với Socket/UI.
+`ChessServer` nhận nhiều kết nối bằng virtual thread, xác thực khung message và định tuyến nghiệp vụ. `ClientConnection` đại diện cho một socket. Khóa `matchmakingLock` bảo vệ các chuỗi kiểm tra-cập nhật ghép cặp, còn `GameSession` khóa trạng thái theo từng ván để chốt chính xác nước đi và timeout. Scheduler chỉ chốt timeout rồi chuyển lưu CSDL và Socket I/O sang virtual-thread executor. Package `chess` là Chess Engine độc lập với Socket/UI.
 
 ## Data Layer
 
