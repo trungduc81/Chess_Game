@@ -19,7 +19,7 @@ public final class AppConfig {
     public static AppConfig load() {
         Map<String, String> fileValues = new HashMap<>();
         String customPath = System.getProperty("chess.env", ".env");
-        Path envPath = Path.of(customPath).toAbsolutePath().normalize();
+        Path envPath = resolveEnvPath(customPath);
         if (Files.isRegularFile(envPath)) {
             try {
                 parseEnv(Files.readAllLines(envPath, StandardCharsets.UTF_8), fileValues);
@@ -28,6 +28,33 @@ public final class AppConfig {
             }
         }
         return new AppConfig(fileValues);
+    }
+
+    /**
+     * Tìm .env theo thư mục chạy trước, sau đó theo vị trí classes/JAR.
+     * Cách thứ hai giúp nút Run của VS Code vẫn đọc đúng cấu hình khi workspace
+     * đang mở ở thư mục cha của dự án.
+     */
+    private static Path resolveEnvPath(String configuredPath) {
+        Path configured = Path.of(configuredPath);
+        if (configured.isAbsolute()) return configured.normalize();
+
+        Path workingCandidate = configured.toAbsolutePath().normalize();
+        if (Files.isRegularFile(workingCandidate)) return workingCandidate;
+
+        try {
+            Path codeLocation = Path.of(AppConfig.class.getProtectionDomain()
+                    .getCodeSource().getLocation().toURI()).toAbsolutePath().normalize();
+            Path current = Files.isDirectory(codeLocation) ? codeLocation : codeLocation.getParent();
+            while (current != null) {
+                Path candidate = current.resolve(configured).normalize();
+                if (Files.isRegularFile(candidate)) return candidate;
+                current = current.getParent();
+            }
+        } catch (Exception ignored) {
+            // Trả về đường dẫn theo working directory để thông báo lỗi vẫn rõ ràng.
+        }
+        return workingCandidate;
     }
 
     private static void parseEnv(List<String> lines, Map<String, String> target) {

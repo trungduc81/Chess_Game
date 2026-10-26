@@ -23,7 +23,13 @@ public final class NetworkClient implements AutoCloseable {
     private volatile String gameId;
 
     public NetworkClient(String host, int port) throws IOException {
-        socket.connect(new InetSocketAddress(host, port), 5_000);
+        try {
+            socket.connect(new InetSocketAddress(host, port), 5_000);
+        } catch (IOException exception) {
+            try { socket.close(); } catch (IOException ignored) { }
+            throw new IOException("Không thể kết nối tới " + host + ":" + port
+                    + " (" + exception.getMessage() + ")", exception);
+        }
         socket.setTcpNoDelay(true);
         socket.setKeepAlive(true);
         reader = new LimitedLineReader(socket.getInputStream());

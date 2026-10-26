@@ -55,7 +55,7 @@ public final class ChessServer implements AutoCloseable {
         scheduler.scheduleAtFixedRate(this::checkTimeouts, 200, 200, TimeUnit.MILLISECONDS);
         scheduler.scheduleAtFixedRate(this::heartbeat, heartbeatIntervalMillis,
                 heartbeatIntervalMillis, TimeUnit.MILLISECONDS);
-        System.out.println("Chess server đang chạy tại cổng " + port);
+        System.out.println("Chess server đang chạy tại 0.0.0.0:" + port);
         while (running) {
             Socket socket = serverSocket.accept();
             socket.setTcpNoDelay(true);
