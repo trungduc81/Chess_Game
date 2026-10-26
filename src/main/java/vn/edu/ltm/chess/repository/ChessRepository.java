@@ -1,7 +1,14 @@
 package vn.edu.ltm.chess.repository;
 
+import vn.edu.ltm.chess.chess.ChessBoard;
+import vn.edu.ltm.chess.chess.Move;
+import vn.edu.ltm.chess.chess.MoveResult;
+import vn.edu.ltm.chess.rating.EloCalculator;
+import vn.edu.ltm.chess.security.PasswordHasher;
+
 import java.sql.*;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +44,7 @@ public final class ChessRepository {
                       black_score DECIMAL(2,1) NOT NULL,
                       move_count INT NOT NULL,
                       initial_fen VARCHAR(120) NOT NULL,
+                      pgn TEXT NOT NULL,
                       white_elo_before INT NOT NULL,
                       white_elo_after INT NOT NULL,
                       white_elo_delta INT NOT NULL,
@@ -64,6 +72,7 @@ public final class ChessRepository {
                       CONSTRAINT fk_move_match FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE,
                       UNIQUE KEY uq_match_ply (match_id, ply)
                     )""");
+            ensureColumn(connection, "matches", "pgn", "TEXT NULL");
         }
     }
 
@@ -134,14 +143,15 @@ public final class ChessRepository {
                 int blackDelta = -whiteDelta;
                 int whiteAfter = whiteRow.elo + whiteDelta;
                 int blackAfter = blackRow.elo + blackDelta;
+                String pgn = buildPgn(moves, result);
 
                 long matchId;
                 try (PreparedStatement statement = connection.prepareStatement("""
                         INSERT INTO matches(game_uid,white_player_id,black_player_id,result,reason,
-                          white_score,black_score,move_count,initial_fen,
+                          white_score,black_score,move_count,initial_fen,pgn,
                           white_elo_before,white_elo_after,white_elo_delta,
                           black_elo_before,black_elo_after,black_elo_delta,started_at,ended_at)
-                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", Statement.RETURN_GENERATED_KEYS)) {
+                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", Statement.RETURN_GENERATED_KEYS)) {
                     int i = 1;
                     statement.setString(i++, gameUid);
                     statement.setLong(i++, whiteRow.id);
@@ -152,6 +162,7 @@ public final class ChessRepository {
                     statement.setDouble(i++, blackScore);
                     statement.setInt(i++, moves.size());
                     statement.setString(i++, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+                    statement.setString(i++, pgn);
                     statement.setInt(i++, whiteRow.elo);
                     statement.setInt(i++, whiteAfter);
                     statement.setInt(i++, whiteDelta);
@@ -186,7 +197,7 @@ public final class ChessRepository {
     public List<MatchSummary> history(String username) throws SQLException {
         String sql = """
                 SELECT m.id,w.username white_name,b.username black_name,m.result,m.reason,m.move_count,
-                       m.white_elo_delta,m.black_elo_delta,
+                       m.initial_fen,m.white_elo_delta,m.black_elo_delta,
                        UNIX_TIMESTAMP(m.started_at)*1000 started_ms,UNIX_TIMESTAMP(m.ended_at)*1000 ended_ms
                 FROM matches m JOIN users w ON w.id=m.white_player_id JOIN users b ON b.id=m.black_player_id
                 WHERE w.username=? OR b.username=? ORDER BY m.ended_at DESC""";
@@ -197,7 +208,8 @@ public final class ChessRepository {
             try (ResultSet result = statement.executeQuery()) {
                 while (result.next()) rows.add(new MatchSummary(result.getLong("id"), result.getString("white_name"),
                         result.getString("black_name"), result.getString("result"), result.getString("reason"),
-                        result.getInt("move_count"), result.getInt("white_elo_delta"),
+                        result.getInt("move_count"), result.getString("initial_fen"),
+                        result.getInt("white_elo_delta"),
                         result.getInt("black_elo_delta"), result.getLong("started_ms"), result.getLong("ended_ms")));
             }
         }
@@ -207,7 +219,7 @@ public final class ChessRepository {
     public List<StoredMove> matchMoves(long matchId, String username) throws SQLException {
         String sql = """
                 SELECT mv.ply,mv.from_square,mv.to_square,mv.promotion,mv.notation,mv.fen_after,
-                       UNIX_TIMESTAMP(mv.played_at)*1000 played_ms
+                       UNIX_TIMESTAMP(mv.played_at)*1000 played_ms,m.initial_fen
                 FROM moves mv JOIN matches m ON m.id=mv.match_id
                 JOIN users w ON w.id=m.white_player_id JOIN users b ON b.id=m.black_player_id
                 WHERE mv.match_id=? AND (w.username=? OR b.username=?) ORDER BY mv.ply""";
@@ -216,47 +228,106 @@ public final class ChessRepository {
             statement.setLong(1, matchId);
             statement.setString(2, username);
             statement.setString(3, username);
+            String initialFen = null;
             try (ResultSet result = statement.executeQuery()) {
                 while (result.next()) {
+                    if (initialFen == null) initialFen = result.getString("initial_fen");
                     String promotion = result.getString("promotion");
                     moves.add(new StoredMove(result.getInt("ply"), result.getString("from_square"),
                             result.getString("to_square"), promotion == null ? null : promotion.charAt(0),
                             result.getString("notation"), result.getString("fen_after"), result.getLong("played_ms")));
                 }
             }
+            if (initialFen != null && moves.stream().anyMatch(move -> move.notation().contains("-"))) {
+                moves = normalizeLegacyMoves(initialFen, moves);
+                updateMoveNotations(connection, matchId, moves);
+            }
         }
         return moves;
     }
 
-    public List<RankingRow> ranking() throws SQLException {
+    public String matchPgn(long matchId, String username, List<StoredMove> moves) throws SQLException {
+        String sql = """
+                SELECT COALESCE(m.pgn,'') pgn,m.result
+                FROM matches m JOIN users w ON w.id=m.white_player_id JOIN users b ON b.id=m.black_player_id
+                WHERE m.id=? AND (w.username=? OR b.username=?)""";
+        try (Connection connection = database.connection(); PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setLong(1, matchId);
+            statement.setString(2, username);
+            statement.setString(3, username);
+            String pgn;
+            String matchResult;
+            try (ResultSet result = statement.executeQuery()) {
+                if (!result.next()) throw new SQLException("Không tìm thấy ván đấu hoặc bạn không có quyền xem");
+                pgn = result.getString("pgn");
+                matchResult = result.getString("result");
+            }
+            if (!pgn.isBlank()) return pgn;
+            pgn = buildPgn(moves, matchResult);
+            try (PreparedStatement update = connection.prepareStatement("UPDATE matches SET pgn=? WHERE id=?")) {
+                update.setString(1, pgn);
+                update.setLong(2, matchId);
+                update.executeUpdate();
+            }
+            return pgn;
+        }
+    }
+
+    public List<RankingRow> ranking(List<RankingSort> requestedSorts) throws SQLException {
+        String orderBy = rankingOrder(requestedSorts);
         String sql = """
                 WITH player_games AS (
-                  SELECT m.id match_id,m.white_player_id player_id,m.black_player_id opponent_id,m.result,m.move_count FROM matches m
+                  SELECT m.id match_id,m.white_player_id player_id,
+                         CASE WHEN m.result='WHITE_WIN' THEN 1 ELSE 0 END won
+                  FROM matches m
                   UNION ALL
-                  SELECT m.id,m.black_player_id,m.white_player_id,m.result,m.move_count FROM matches m
+                  SELECT m.id,m.black_player_id,
+                         CASE WHEN m.result='BLACK_WIN' THEN 1 ELSE 0 END
+                  FROM matches m
                 ), aggregated AS (
                   SELECT u.id,u.username,u.elo,
-                    AVG(o.elo) avg_opponent_elo,
-                    AVG(CASE WHEN (pg.player_id=m.white_player_id AND pg.result='WHITE_WIN') OR
-                                      (pg.player_id=m.black_player_id AND pg.result='BLACK_WIN') THEN pg.move_count END) avg_win_plies,
-                    AVG(CASE WHEN (pg.player_id=m.white_player_id AND pg.result='BLACK_WIN') OR
-                                      (pg.player_id=m.black_player_id AND pg.result='WHITE_WIN') THEN pg.move_count END) avg_loss_plies
+                    COALESCE(SUM(pg.won),0) wins,
+                    COUNT(pg.match_id) total_matches
                   FROM users u LEFT JOIN player_games pg ON pg.player_id=u.id
-                  LEFT JOIN users o ON o.id=pg.opponent_id
-                  LEFT JOIN matches m ON m.id=pg.match_id
                   GROUP BY u.id,u.username,u.elo
-                ) SELECT username,elo,avg_opponent_elo,avg_win_plies,avg_loss_plies FROM aggregated
-                  ORDER BY elo DESC,avg_opponent_elo DESC,
-                           COALESCE(avg_win_plies,999999) ASC,COALESCE(avg_loss_plies,0) DESC,username ASC""";
+                ) SELECT username,elo,wins,total_matches,
+                         CASE WHEN total_matches=0 THEN 0
+                              ELSE wins*100.0/total_matches END win_rate
+                  FROM aggregated
+                  ORDER BY %s""".formatted(orderBy);
         List<RankingRow> rows = new ArrayList<>();
         try (Connection connection = database.connection(); Statement statement = connection.createStatement();
              ResultSet result = statement.executeQuery(sql)) {
             int rank = 1;
             while (result.next()) rows.add(new RankingRow(rank++, result.getString("username"),
-                    result.getInt("elo"), nullableDouble(result, "avg_opponent_elo"),
-                    nullableDouble(result, "avg_win_plies"), nullableDouble(result, "avg_loss_plies")));
+                    result.getInt("elo"), result.getInt("wins"),
+                    result.getInt("total_matches"), result.getDouble("win_rate")));
         }
         return rows;
+    }
+
+    private static String rankingOrder(List<RankingSort> requestedSorts) {
+        List<RankingSort> sorts = requestedSorts == null || requestedSorts.isEmpty()
+                ? List.of(new RankingSort(RankingSort.Field.ELO, false),
+                        new RankingSort(RankingSort.Field.TOTAL_MATCHES, false),
+                        new RankingSort(RankingSort.Field.WIN_RATE, false))
+                : requestedSorts;
+        List<String> order = new ArrayList<>();
+        EnumSet<RankingSort.Field> used = EnumSet.noneOf(RankingSort.Field.class);
+        for (RankingSort sort : sorts) {
+            if (sort == null || !used.add(sort.field()))
+                continue;
+            String column = switch (sort.field()) {
+                case ELO -> "elo";
+                case TOTAL_MATCHES -> "total_matches";
+                case WIN_RATE -> "win_rate";
+            };
+            order.add(column + (sort.ascending() ? " ASC" : " DESC"));
+        }
+        if (order.isEmpty())
+            return "elo DESC,total_matches DESC,win_rate DESC,username ASC";
+        order.add("username ASC");
+        return String.join(",", order);
     }
 
     private static void insertMoves(Connection connection, long matchId, List<StoredMove> moves) throws SQLException {
@@ -280,10 +351,67 @@ public final class ChessRepository {
         }
     }
 
+    private static String buildPgn(List<StoredMove> moves, String result) {
+        StringBuilder pgn = new StringBuilder();
+        for (int index = 0; index < moves.size(); index++) {
+            if (index % 2 == 0) pgn.append(index / 2 + 1).append(". ");
+            pgn.append(moves.get(index).notation()).append(' ');
+        }
+        pgn.append(switch (result) {
+            case "WHITE_WIN" -> "1-0";
+            case "BLACK_WIN" -> "0-1";
+            case "DRAW" -> "1/2-1/2";
+            default -> "*";
+        });
+        return pgn.toString().trim();
+    }
+
+    private static List<StoredMove> normalizeLegacyMoves(String initialFen, List<StoredMove> moves) {
+        ChessBoard board = ChessBoard.fromFen(initialFen);
+        List<StoredMove> normalized = new ArrayList<>(moves.size());
+        for (StoredMove move : moves) {
+            MoveResult result = board.move(new Move(move.from(), move.to(), move.promotion()));
+            String notation = result.accepted() ? result.notation() : move.notation();
+            normalized.add(new StoredMove(move.ply(), move.from(), move.to(), move.promotion(),
+                    notation, move.fenAfter(), move.playedAt()));
+        }
+        return normalized;
+    }
+
+    private static void updateMoveNotations(Connection connection, long matchId,
+                                            List<StoredMove> moves) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "UPDATE moves SET notation=? WHERE match_id=? AND ply=?")) {
+            for (StoredMove move : moves) {
+                statement.setString(1, move.notation());
+                statement.setLong(2, matchId);
+                statement.setInt(3, move.ply());
+                statement.addBatch();
+            }
+            statement.executeBatch();
+        }
+    }
+
+    private static void ensureColumn(Connection connection, String table, String column,
+                                     String definition) throws SQLException {
+        try (ResultSet columns = connection.getMetaData()
+                .getColumns(connection.getCatalog(), null, "%", "%")) {
+            while (columns.next()) {
+                if (table.equalsIgnoreCase(columns.getString("TABLE_NAME"))
+                        && column.equalsIgnoreCase(columns.getString("COLUMN_NAME"))) {
+                    return;
+                }
+            }
+        }
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
+        }
+    }
+
     private static Map<String, PlayerRow> lockPlayers(Connection connection, String white, String black) throws SQLException {
         Map<String, PlayerRow> players = new HashMap<>();
         try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT id,username,elo FROM users WHERE username IN (?,?) ORDER BY id FOR UPDATE")) {
+                "SELECT id,username,elo FROM users WHERE username IN (?,?) ORDER BY id ASC FOR UPDATE")) {
             statement.setString(1, white);
             statement.setString(2, black);
             try (ResultSet result = statement.executeQuery()) {
@@ -322,11 +450,6 @@ public final class ChessRepository {
                         result.getInt("black_elo_delta"), false);
             }
         }
-    }
-
-    private static Double nullableDouble(ResultSet result, String column) throws SQLException {
-        double value = result.getDouble(column);
-        return result.wasNull() ? null : value;
     }
 
     private record PlayerRow(long id, int elo) { }

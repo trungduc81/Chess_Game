@@ -1,6 +1,7 @@
 package vn.edu.ltm.chess.client;
 
 import vn.edu.ltm.chess.protocol.JsonProtocol;
+import vn.edu.ltm.chess.protocol.LimitedLineReader;
 import vn.edu.ltm.chess.protocol.MessageType;
 import vn.edu.ltm.chess.protocol.NetworkMessage;
 
@@ -14,7 +15,7 @@ import java.util.function.Consumer;
 /** Một kết nối TCP lâu dài của JavaFX client tới server. */
 public final class NetworkClient implements AutoCloseable {
     private final Socket socket = new Socket();
-    private final BufferedReader reader;
+    private final LimitedLineReader reader;
     private final BufferedWriter writer;
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile Consumer<NetworkMessage> listener = message -> { };
@@ -25,7 +26,7 @@ public final class NetworkClient implements AutoCloseable {
         socket.connect(new InetSocketAddress(host, port), 5_000);
         socket.setTcpNoDelay(true);
         socket.setKeepAlive(true);
-        reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+        reader = new LimitedLineReader(socket.getInputStream());
         writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
         Thread.ofVirtual().name("chess-client-reader").start(this::readLoop);
     }

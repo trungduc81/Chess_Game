@@ -1,4 +1,4 @@
-package vn.edu.ltm.chess.repository;
+package vn.edu.ltm.chess.rating;
 
 public final class EloCalculator {
     public static final int DEFAULT_ELO = 1200;

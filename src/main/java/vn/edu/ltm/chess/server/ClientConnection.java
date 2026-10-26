@@ -1,6 +1,7 @@
 package vn.edu.ltm.chess.server;
 
 import vn.edu.ltm.chess.protocol.JsonProtocol;
+import vn.edu.ltm.chess.protocol.LimitedLineReader;
 import vn.edu.ltm.chess.protocol.NetworkMessage;
 
 import java.io.*;
@@ -10,7 +11,7 @@ import java.nio.charset.StandardCharsets;
 public final class ClientConnection implements Runnable, AutoCloseable {
     private final Socket socket;
     private final ChessServer server;
-    private final BufferedReader reader;
+    private final LimitedLineReader reader;
     private final BufferedWriter writer;
     private volatile String username;
     private volatile String sessionToken;
@@ -19,7 +20,7 @@ public final class ClientConnection implements Runnable, AutoCloseable {
     public ClientConnection(Socket socket, ChessServer server) throws IOException {
         this.socket = socket;
         this.server = server;
-        reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+        reader = new LimitedLineReader(socket.getInputStream());
         writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
     }
 

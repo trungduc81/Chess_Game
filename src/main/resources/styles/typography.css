@@ -1,0 +1,32 @@
+/* Same text family as the reference website's global style.css. */
+* {
+    -fx-font-family: "Segoe UI";
+}
+
+/* JavaFX uses one installed family name; it falls back to the system font itself. */
+.text {
+    -fx-font-smoothing-type: gray;
+}
+
+/* Shared baseline; view styles only specialize the text's role. */
+.root {
+    -fx-font-size: 14px;
+    -fx-font-weight: normal;
+}
+
+/* Preserve dedicated glyphs and fixed-width clock digits. */
+.lobby-icon,
+.player-icon,
+.empty-player-icon,
+.popup-unicode-icon {
+    -fx-font-family: "Segoe UI Symbol";
+}
+
+.clock-label,
+.current-elo-badge,
+.mono-value,
+.dark-table .table-cell.numeric-column,
+.moves-table .table-cell,
+.replay-move-list .list-cell {
+    -fx-font-family: "Consolas";
+}

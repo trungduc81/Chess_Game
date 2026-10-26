@@ -1,0 +1,159 @@
+@import "typography.css";
+
+.overlay-backdrop {
+    -fx-background-color: rgba(15, 23, 42, 0.56);
+    -fx-alignment: center;
+    -fx-font-family: "Segoe UI";
+}
+
+.overlay-backdrop.board-visible-overlay {
+    -fx-background-color: rgba(15, 23, 42, 0.16);
+}
+
+.popup-card {
+    -fx-background-color: rgba(30, 41, 59, 0.90);
+    -fx-background-radius: 15px;
+    -fx-border-color: rgba(255, 255, 255, 0.20);
+    -fx-border-width: 2px;
+    -fx-border-radius: 15px;
+    -fx-padding: 20px 24px;
+    -fx-max-width: 400px;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.42), 24, 0.2, 0, 9);
+}
+
+.popup-card.popup-win {
+    -fx-border-color: #f5c451;
+}
+
+.popup-card.popup-lose,
+.popup-card.popup-danger {
+    -fx-border-color: #a94853;
+}
+
+.popup-card.popup-draw {
+    -fx-border-color: #4c91d7;
+}
+
+.popup-card.board-visible-popup-card {
+    -fx-background-color: rgba(30, 41, 59, 0.86);
+    -fx-max-width: 340px;
+    -fx-padding: 18px 20px;
+}
+
+.popup-danger .popup-unicode-icon,
+.popup-lose .popup-unicode-icon {
+    -fx-text-fill: #ef6b74;
+    -fx-effect: dropshadow(gaussian, rgba(239, 68, 68, 0.5), 16, 0.32, 0, 2);
+}
+
+.popup-draw .popup-unicode-icon {
+    -fx-text-fill: #70b7ff;
+    -fx-effect: dropshadow(gaussian, rgba(59, 130, 246, 0.48), 16, 0.32, 0, 2);
+}
+
+.popup-title {
+    -fx-text-fill: #ffffff;
+    -fx-font-size: 20px;
+    -fx-font-weight: 900;
+    -fx-font-style: italic;
+    -fx-text-alignment: center;
+}
+
+.popup-message {
+    -fx-text-fill: #e2e8f0;
+    -fx-font-size: 14px;
+    -fx-font-weight: 600;
+    -fx-line-spacing: 2px;
+    -fx-text-alignment: center;
+    -fx-alignment: center;
+}
+
+.popup-unicode-icon {
+    -fx-text-fill: #ff9d3f;
+    -fx-font-family: "Segoe UI Symbol";
+    -fx-font-size: 48px;
+    -fx-effect: dropshadow(gaussian, rgba(207, 115, 23, 0.48), 16, 0.32, 0, 2);
+}
+
+.elo-badge {
+    -fx-background-radius: 18px;
+    -fx-padding: 5px 12px;
+    -fx-font-size: 13px;
+    -fx-font-weight: bold;
+}
+
+.elo-positive {
+    -fx-background-color: rgba(34, 197, 94, 0.18);
+    -fx-border-color: #22c55e;
+    -fx-border-radius: 18px;
+    -fx-text-fill: #86efac;
+}
+
+.elo-negative {
+    -fx-background-color: rgba(239, 68, 68, 0.18);
+    -fx-border-color: #ef4444;
+    -fx-border-radius: 18px;
+    -fx-text-fill: #fca5a5;
+}
+
+.elo-neutral {
+    -fx-background-color: rgba(59, 130, 246, 0.18);
+    -fx-border-color: #3b82f6;
+    -fx-border-radius: 18px;
+    -fx-text-fill: #93c5fd;
+}
+
+.popup-btn-primary,
+.popup-btn-secondary {
+    -fx-background-radius: 9px;
+    -fx-font-size: 14px;
+    -fx-font-weight: bold;
+    -fx-padding: 9px 15px;
+    -fx-cursor: hand;
+}
+
+.popup-btn-primary {
+    -fx-background-color: #cf7317;
+    -fx-text-fill: white;
+    -fx-effect: dropshadow(gaussian, rgba(207, 115, 23, 0.34), 10, 0, 0, 4);
+}
+
+.popup-btn-primary:hover {
+    -fx-background-color: #e07d1a;
+}
+
+.popup-btn-secondary {
+    -fx-background-color: rgba(255, 255, 255, 0.10);
+    -fx-border-color: rgba(255, 255, 255, 0.20);
+    -fx-border-radius: 9px;
+    -fx-text-fill: #e5eaf1;
+}
+
+.popup-btn-secondary:hover {
+    -fx-background-color: rgba(255, 255, 255, 0.18);
+}
+
+.promotion-piece-button {
+    -fx-background-color: rgba(255, 255, 255, 0.08);
+    -fx-background-radius: 10px;
+    -fx-border-color: rgba(255, 255, 255, 0.18);
+    -fx-border-radius: 10px;
+    -fx-padding: 6px;
+    -fx-cursor: hand;
+}
+
+.promotion-piece-button:hover {
+    -fx-background-color: #cf7317;
+    -fx-border-color: #ff9d3f;
+    -fx-effect: dropshadow(gaussian, rgba(207, 115, 23, 0.38), 12, 0, 0, 2);
+}
+
+.content-popup-card {
+    -fx-padding: 18px;
+    -fx-max-width: 900px;
+}
+
+.content-scroll,
+.content-scroll > .viewport {
+    -fx-background-color: transparent;
+}

@@ -1,7 +1,10 @@
 package vn.edu.ltm.chess.chess;
 
 import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Server-authoritative chess board. Uppercase pieces are white, lowercase are black.
@@ -137,8 +140,7 @@ public final class ChessBoard {
         }
 
         ChessColor mover = turn;
-        String notation = move.from() + "-" + move.to()
-                + (move.promotion() == null ? "" : "=" + Character.toUpperCase(move.promotion()));
+        String notation = sanBeforeMove(move, piece, mover);
         applyUnchecked(move);
 
         GameOutcome outcome = GameOutcome.PLAYING;
@@ -168,6 +170,64 @@ public final class ChessBoard {
         return new MoveResult(true, "Nước đi hợp lệ", notation, toFen(), turn, outcome, reason);
     }
 
+    /** Tạo phần SAN trước hậu tố chiếu (+) hoặc chiếu bí (#). */
+    private String sanBeforeMove(Move move, char piece, ChessColor mover) {
+        int fromRow = row(move.from());
+        int fromCol = col(move.from());
+        int toRow = row(move.to());
+        int toCol = col(move.to());
+        char type = Character.toLowerCase(piece);
+
+        if (type == 'k' && Math.abs(toCol - fromCol) == 2) {
+            return toCol > fromCol ? "O-O" : "O-O-O";
+        }
+
+        boolean capture = board[toRow][toCol] != '.' || (type == 'p' && fromCol != toCol);
+        StringBuilder notation = new StringBuilder();
+        if (type == 'p') {
+            if (capture) notation.append(move.from().charAt(0)).append('x');
+        } else {
+            notation.append(Character.toUpperCase(type));
+            notation.append(disambiguation(move, piece, mover));
+            if (capture) notation.append('x');
+        }
+        notation.append(move.to());
+
+        if (type == 'p' && (toRow == 0 || toRow == 7)) {
+            char promotion = move.promotion() == null ? 'q' : move.promotion();
+            notation.append('=').append(Character.toUpperCase(promotion));
+        }
+        return notation.toString();
+    }
+
+    /** Phân biệt hai quân cùng loại đều có thể đi tới cùng một ô theo quy tắc SAN. */
+    private String disambiguation(Move move, char piece, ChessColor mover) {
+        int fromRow = row(move.from());
+        int fromCol = col(move.from());
+        boolean ambiguous = false;
+        boolean sameFile = false;
+        boolean sameRank = false;
+
+        for (int candidateRow = 0; candidateRow < 8; candidateRow++) {
+            for (int candidateCol = 0; candidateCol < 8; candidateCol++) {
+                if ((candidateRow == fromRow && candidateCol == fromCol)
+                        || board[candidateRow][candidateCol] != piece) {
+                    continue;
+                }
+                String candidateFrom = square(candidateRow, candidateCol);
+                if (!isLegal(new Move(candidateFrom, move.to(), null), mover)) continue;
+                ambiguous = true;
+                if (candidateCol == fromCol) sameFile = true;
+                if (candidateRow == fromRow) sameRank = true;
+            }
+        }
+
+        if (!ambiguous) return "";
+        if (!sameFile) return String.valueOf(move.from().charAt(0));
+        if (!sameRank) return String.valueOf(move.from().charAt(1));
+        return move.from();
+    }
+
     public synchronized boolean isLegal(Move move, ChessColor color) {
         if (!validSquare(move.from()) || !validSquare(move.to())) {
             return false;
@@ -186,6 +246,33 @@ public final class ChessBoard {
         ChessBoard copy = new ChessBoard(this);
         copy.applyUnchecked(move);
         return !copy.isKingInCheck(color);
+    }
+
+    /** Trả về các ô đích hợp lệ của một quân, bao gồm cả ràng buộc an toàn của Vua. */
+    public synchronized List<String> legalDestinations(String from, ChessColor color) {
+        if (!validSquare(from)) return List.of();
+        int fromRow = row(from);
+        int fromCol = col(from);
+        char piece = board[fromRow][fromCol];
+        if (piece == '.' || colorOf(piece) != color) return List.of();
+
+        Set<String> destinations = new LinkedHashSet<>();
+        for (int toRow = 0; toRow < 8; toRow++) {
+            for (int toCol = 0; toCol < 8; toCol++) {
+                String to = square(toRow, toCol);
+                if (Character.toLowerCase(piece) == 'p' && (toRow == 0 || toRow == 7)) {
+                    for (char promotion : new char[]{'q', 'r', 'b', 'n'}) {
+                        if (isLegal(new Move(from, to, promotion), color)) {
+                            destinations.add(to);
+                            break;
+                        }
+                    }
+                } else if (isLegal(new Move(from, to, null), color)) {
+                    destinations.add(to);
+                }
+            }
+        }
+        return List.copyOf(destinations);
     }
 
     private boolean pseudoLegal(Move move, ChessColor color) {

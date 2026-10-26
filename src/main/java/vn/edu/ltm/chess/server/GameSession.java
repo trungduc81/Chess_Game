@@ -12,6 +12,8 @@ public final class GameSession {
     public enum Phase { PLAYING, FINISHING, AWAITING_REMATCH, CLOSED }
     public record TurnResult(boolean accepted, String error, MoveResult moveResult,
                              boolean finished, String timedOutPlayer) { }
+    public record StateSnapshot(String fen, ChessColor turn, boolean inCheck,
+                                long deadlineEpochMs, List<StoredMove> moves) { }
 
     private final String id = UUID.randomUUID().toString();
     private final String white;
@@ -64,6 +66,12 @@ public final class GameSession {
         if (finished) phase = Phase.FINISHING;
         else deadlineEpochMs = acceptedAt + turnTimeoutMillis;
         return new TurnResult(true, null, result, finished, null);
+    }
+
+    public synchronized List<String> legalDestinations(String player, String from) {
+        ChessColor color = colorOf(player);
+        if (phase != Phase.PLAYING || color == null || color != board.turn()) return List.of();
+        return board.legalDestinations(from, color);
     }
 
     /** Chốt timeout trong cùng monitor với MOVE để tránh hai kết quả cho một lượt. */
@@ -127,6 +135,12 @@ public final class GameSession {
     public String black() { return black; }
     public synchronized String fen() { return board.toFen(); }
     public synchronized ChessColor turn() { return board.turn(); }
+    public synchronized boolean currentTurnInCheck() { return board.isKingInCheck(board.turn()); }
+    public synchronized StateSnapshot stateSnapshot() {
+        ChessColor currentTurn = board.turn();
+        return new StateSnapshot(board.toFen(), currentTurn, board.isKingInCheck(currentTurn),
+                deadlineEpochMs, List.copyOf(moves));
+    }
     public synchronized long deadlineEpochMs() { return deadlineEpochMs; }
     public synchronized Phase phase() { return phase; }
     public long startedAt() { return startedAt; }

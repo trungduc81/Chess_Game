@@ -1,4 +1,4 @@
-package vn.edu.ltm.chess.repository;
+package vn.edu.ltm.chess.security;
 
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
@@ -29,7 +29,11 @@ public final class PasswordHasher {
     private static byte[] hash(String password, byte[] salt) {
         try {
             PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, ITERATIONS, KEY_LENGTH);
-            return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded();
+            try {
+                return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded();
+            } finally {
+                spec.clearPassword();
+            }
         } catch (Exception exception) {
             throw new IllegalStateException("Không thể băm mật khẩu", exception);
         }
