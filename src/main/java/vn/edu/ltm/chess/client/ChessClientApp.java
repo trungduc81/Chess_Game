@@ -14,6 +14,7 @@ import vn.edu.ltm.chess.client.ui.LoginView;
 import vn.edu.ltm.chess.client.ui.ProfileView;
 import vn.edu.ltm.chess.client.ui.RankingView;
 import vn.edu.ltm.chess.client.ui.ReplayView;
+import vn.edu.ltm.chess.client.ui.SoundManager;
 import vn.edu.ltm.chess.config.AppConfig;
 import vn.edu.ltm.chess.protocol.JsonProtocol;
 import vn.edu.ltm.chess.protocol.MessageType;
@@ -303,6 +304,7 @@ public final class ChessClientApp extends Application {
             answerChallenge(challengeId, false);
             return;
         }
+        SoundManager.play(SoundManager.Effect.CHALLENGE);
         DialogOverlay.challenge(popupOwner(), data.path("challenger").asText(),
                 data.path("challengerElo").asInt(1200),
                 accept -> answerChallenge(challengeId, accept));
@@ -366,6 +368,7 @@ public final class ChessClientApp extends Application {
     }
 
     private void handleDisconnect(JsonNode data) {
+        SoundManager.play(SoundManager.Effect.DISCONNECT);
         stopGameView();
         network = null;
         username = null;
@@ -410,5 +413,6 @@ public final class ChessClientApp extends Application {
         stopReplayView();
         if (network != null)
             network.close();
+        SoundManager.shutdown();
     }
 }

@@ -77,11 +77,16 @@ public final class LobbyView {
 
         Button history = navigationButton("Hồ sơ", "btn-secondary");
         Button ranking = navigationButton("Bảng xếp hạng", "btn-secondary");
+        Button sound = navigationButton(soundButtonText(), "btn-secondary");
         Button logout = navigationButton("Đăng xuất", "btn-danger");
         history.setOnAction(event -> actions.showProfile());
         ranking.setOnAction(event -> actions.showRanking());
+        sound.setOnAction(event -> {
+            SoundManager.toggleMuted();
+            sound.setText(soundButtonText());
+        });
         logout.setOnAction(event -> actions.logout());
-        HBox navigation = new HBox(9, history, ranking, logout);
+        HBox navigation = new HBox(9, history, ranking, sound, logout);
         navigation.setAlignment(Pos.CENTER_RIGHT);
 
         Region headerSpacer = new Region();
@@ -311,5 +316,9 @@ public final class LobbyView {
         Button button = new Button(text);
         button.getStyleClass().add(styleClass);
         return button;
+    }
+
+    private static String soundButtonText() {
+        return SoundManager.isMuted() ? "Âm thanh: Tắt" : "Âm thanh: Bật";
     }
 }
