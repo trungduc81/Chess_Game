@@ -57,6 +57,12 @@ public final class NetworkClient implements AutoCloseable {
             String line;
             while ((line = reader.readLine()) != null) {
                 NetworkMessage message = JsonProtocol.decode(line);
+                if (message.type() == MessageType.DISCONNECTED) {
+                    closed.set(true);
+                    listener.accept(message);
+                    try { socket.close(); } catch (IOException ignored) { }
+                    return;
+                }
                 if (message.type() == MessageType.PING) {
                     send(new NetworkMessage(MessageType.PONG, message.requestId(), sessionToken, gameId,
                             JsonProtocol.object().put("clientTime", System.currentTimeMillis())));

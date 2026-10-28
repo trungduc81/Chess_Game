@@ -31,7 +31,8 @@ Mỗi thông điệp là một JSON UTF-8 trên đúng một dòng. Kích thư�
 | Ván đấu | `LEGAL_MOVES_REQUEST`, `MOVE`, `RESIGN`, `EXIT_GAME`, `REMATCH_RESPONSE` | `GAME_STARTED`, `GAME_STATE`, `LEGAL_MOVES_RESPONSE`, `MOVE_REJECTED`, `GAME_OVER`, `REMATCH_STATUS` |
 | Tương tác | `CHAT_SEND`, `DRAW_OFFER`, `DRAW_RESPONSE` | `CHAT_RECEIVED`, `DRAW_RECEIVED`, `DRAW_RESULT` |
 | Dữ liệu | `HISTORY_REQUEST`, `MATCH_DETAIL_REQUEST`, `RANKING_REQUEST` | `HISTORY_RESPONSE`, `MATCH_DETAIL_RESPONSE`, `RANKING_RESPONSE` |
-| Kết nối | `PONG` | `PING`, `DISCONNECTED` (sự kiện nội bộ Client) |
+| Quản trị | `ADMIN_DASHBOARD_REQUEST`, `ADMIN_USERS_REQUEST`, `ADMIN_LOCK_USER`, `ADMIN_UNLOCK_USER`, `ADMIN_KICK_USER`, `ADMIN_MATCHES_REQUEST` | `ADMIN_DASHBOARD_RESPONSE`, `ADMIN_USERS_RESPONSE`, `ADMIN_MATCHES_RESPONSE`, `ADMIN_ACTION_RESULT`, `ERROR` |
+| Kết nối | `PONG` | `PING`, `DISCONNECTED` (Server có thể chủ động ngắt phiên) |
 
 `CHALLENGE_RECEIVED` trả về `challengeId`, `challenger` và `challengerElo` để Client hiển thị đầy đủ lời mời thách đấu.
 
@@ -39,8 +40,99 @@ Mỗi thông điệp là một JSON UTF-8 trên đúng một dòng. Kích thư�
 
 1. Client gửi `LOGIN` không có token.
 2. Server xác thực tài khoản và kiểm tra đăng nhập trùng.
-3. Server trả `LOGIN_SUCCESS` có `sessionToken` và ELO.
+3. Server trả `LOGIN_SUCCESS` có `sessionToken`, ELO và `role` (`PLAYER` hoặc `ADMIN`).
 4. `NetworkClient` tự gắn token vào các yêu cầu sau đó.
+
+Ví dụ payload đăng nhập thành công:
+
+```json
+{
+  "username": "admin",
+  "elo": 1200,
+  "role": "ADMIN",
+  "sessionToken": "uuid-phien-dang-nhap"
+}
+```
+
+Tài khoản có `account_status=LOCKED` bị từ chối đăng nhập. Admin dùng cùng `LOGIN` và cùng kết nối TCP
+với người chơi, nhưng Server chỉ chấp nhận nhóm `ADMIN_*`, `MATCH_DETAIL_REQUEST`, `LOGOUT` và heartbeat
+cho phiên có `role=ADMIN`. Người chơi gửi giả thông điệp quản trị sẽ nhận `ERROR`.
+
+## Giao thức quản trị
+
+Tất cả yêu cầu dưới đây phải có `sessionToken` của Admin. Payload của các request chỉ đọc dữ liệu là `{}`.
+
+### Dashboard
+
+- Client gửi `ADMIN_DASHBOARD_REQUEST`.
+- Server trả `ADMIN_DASHBOARD_RESPONSE`:
+
+```json
+{
+  "totalUsers": 24,
+  "onlineUsers": 5,
+  "activeGames": 2,
+  "totalMatches": 128
+}
+```
+
+`totalUsers` chỉ đếm tài khoản người chơi; `onlineUsers` không tính phiên Admin.
+
+### Quản lý tài khoản
+
+- `ADMIN_USERS_REQUEST` trả `ADMIN_USERS_RESPONSE` là một mảng. Mỗi phần tử có dạng:
+
+```json
+{
+  "id": 12,
+  "username": "player1",
+  "elo": 1230,
+  "totalMatches": 17,
+  "online": true,
+  "onlineStatus": "FREE",
+  "playerStatus": "FREE",
+  "accountStatus": "ACTIVE",
+  "role": "PLAYER",
+  "createdAt": 1770000000000,
+  "lockedReason": null
+}
+```
+
+- Khóa tài khoản: `ADMIN_LOCK_USER` với payload
+  `{ "username": "player1", "reason": "Lý do khóa" }`.
+- Mở khóa: `ADMIN_UNLOCK_USER` với payload `{ "username": "player1" }`.
+- Ngắt kết nối: `ADMIN_KICK_USER` với payload `{ "username": "player1" }`.
+
+Thao tác thành công trả `ADMIN_ACTION_RESULT`:
+
+```json
+{
+  "success": true,
+  "username": "player1",
+  "accountStatus": "LOCKED",
+  "message": "Đã khóa tài khoản player1"
+}
+```
+
+`accountStatus` có trong kết quả khóa/mở khóa và có thể vắng trong kết quả ngắt kết nối.
+Admin không được khóa, mở khóa hoặc ngắt kết nối một tài khoản Admin. Khi khóa người chơi đang online,
+Server cập nhật CSDL trước rồi đóng kết nối; mọi hành động được ghi vào `admin_audit_logs`.
+
+### Danh sách trận đấu và replay
+
+- `ADMIN_MATCHES_REQUEST` trả `ADMIN_MATCHES_RESPONSE`, là mảng toàn bộ trận đấu gồm các trường
+  `id`, `whitePlayer`, `blackPlayer`, `result`, `reason`, `moveCount`, `initialFen`,
+  `whiteEloDelta`, `blackEloDelta`, `startedAt`, `endedAt`.
+- Payload có thể chứa `sorts`, ví dụ `{ "sorts": [{ "field": "MOVE_COUNT", "direction": "ASC" }] }`.
+  Các tiêu chí cho phép: `TIME` (thời gian kết thúc), `MOVE_COUNT` (số nước), `ID` (mã trận);
+  hướng sắp xếp là `ASC` hoặc `DESC`, ưu tiên theo thứ tự trong mảng. Tiêu chí không chọn không
+  tham gia sắp xếp. Server chỉ dùng tên cột trong danh sách trắng và dùng `ID DESC` để phân định
+  khi bằng nhau nếu chưa chọn `ID`. Khi không truyền tiêu chí, mặc định là
+  `TIME DESC`, `MOVE_COUNT DESC`, `ID DESC`.
+- Admin yêu cầu replay bằng `MATCH_DETAIL_REQUEST` hiện có với payload `{ "matchId": 15 }`.
+- Server kiểm tra phiên Admin và trả `MATCH_DETAIL_RESPONSE` có cùng định dạng với replay người chơi:
+  `{ "pgn": "1. e4 e5 ...", "moves": [...] }`. Admin được xem mọi trận; người chơi thường chỉ
+  được xem trận có chính họ tham gia.
 
 ## Luồng nước đi
 

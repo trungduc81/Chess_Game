@@ -101,4 +101,6 @@ public final class AppConfig {
     public int moveTimeoutSeconds() { return integer("CHESS_MOVE_TIMEOUT_SECONDS", 30); }
     public int heartbeatIntervalSeconds() { return integer("CHESS_HEARTBEAT_INTERVAL_SECONDS", 5); }
     public int heartbeatTimeoutSeconds() { return integer("CHESS_HEARTBEAT_TIMEOUT_SECONDS", 15); }
+    public String adminUsername() { return value("CHESS_ADMIN_USERNAME", "").trim(); }
+    public String adminPassword() { return value("CHESS_ADMIN_PASSWORD", ""); }
 }

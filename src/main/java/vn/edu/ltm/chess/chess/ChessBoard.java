@@ -292,7 +292,7 @@ public final class ChessBoard {
             case 'r' -> (dr == 0 || dc == 0) && pathClear(fr, fc, tr, tc);
             case 'q' -> (dr == 0 || dc == 0 || Math.abs(dr) == Math.abs(dc))
                     && pathClear(fr, fc, tr, tc);
-            case 'k' -> kingMoveLegal(color, fr, fc, tr, tc, dr, dc);
+            case 'k' -> kingMoveLegal(color, fr, fc, dr, dc);
             default -> false;
         };
     }
@@ -328,7 +328,7 @@ public final class ChessBoard {
         return move.promotion() == null;
     }
 
-    private boolean kingMoveLegal(ChessColor color, int fr, int fc, int tr, int tc, int dr, int dc) {
+    private boolean kingMoveLegal(ChessColor color, int fr, int fc, int dr, int dc) {
         if (Math.max(Math.abs(dr), Math.abs(dc)) == 1) {
             return true;
         }

@@ -49,12 +49,6 @@
     -fx-font-weight: 900;
 }
 
-.profile-crown {
-    -fx-font-family: "Segoe UI Symbol";
-    -fx-font-size: 32px;
-    -fx-text-fill: #fbbf24;
-}
-
 .profile-name {
     -fx-text-fill: #f8fafc;
     -fx-font-size: 18px;
@@ -65,15 +59,6 @@
     -fx-font-size: 22px;
     -fx-font-weight: 900;
     -fx-text-fill: #fbbf24;
-}
-
-.profile-title-badge {
-    -fx-background-color: rgba(207, 115, 23, 0.20);
-    -fx-background-radius: 14px;
-    -fx-padding: 4px 10px;
-    -fx-text-fill: #ff9d3f;
-    -fx-font-size: 11px;
-    -fx-font-weight: bold;
 }
 
 .stat-value {
@@ -91,7 +76,6 @@
 .stat-win { -fx-text-fill: #4ade80; }
 .stat-draw { -fx-text-fill: #38bdf8; }
 .stat-loss { -fx-text-fill: #f87171; }
-.stat-rate { -fx-text-fill: #fbbf24; }
 
 .chart-legend {
     -fx-background-color: rgba(15, 23, 42, 0.75);
@@ -193,8 +177,7 @@
     -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.55), 4, 0.25, 0, 1);
 }
 
-.rank-badge,
-.result-badge {
+.rank-badge {
     -fx-background-radius: 14px;
     -fx-border-radius: 14px;
     -fx-padding: 4px 10px;
@@ -370,21 +353,6 @@
 .dark-table .table-row-cell.current-user-row .table-cell {
     -fx-text-fill: #ff9d3f;
     -fx-font-weight: bold;
-}
-
-.result-win {
-    -fx-background-color: rgba(74, 222, 128, 0.13);
-    -fx-text-fill: #4ade80;
-}
-
-.result-loss {
-    -fx-background-color: rgba(248, 113, 113, 0.14);
-    -fx-text-fill: #f87171;
-}
-
-.result-draw {
-    -fx-background-color: rgba(96, 165, 250, 0.14);
-    -fx-text-fill: #93c5fd;
 }
 
 .dark-table .table-cell.elo-positive {

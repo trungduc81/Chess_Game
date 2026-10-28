@@ -15,9 +15,6 @@
 }
 
 /* Preserve dedicated glyphs and fixed-width clock digits. */
-.lobby-icon,
-.player-icon,
-.empty-player-icon,
 .popup-unicode-icon {
     -fx-font-family: "Segoe UI Symbol";
 }
@@ -26,7 +23,6 @@
 .current-elo-badge,
 .mono-value,
 .dark-table .table-cell.numeric-column,
-.moves-table .table-cell,
-.replay-move-list .list-cell {
+.moves-table .table-cell {
     -fx-font-family: "Consolas";
 }

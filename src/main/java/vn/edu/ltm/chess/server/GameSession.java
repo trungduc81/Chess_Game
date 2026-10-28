@@ -133,15 +133,12 @@ public final class GameSession {
     public String id() { return id; }
     public String white() { return white; }
     public String black() { return black; }
-    public synchronized String fen() { return board.toFen(); }
-    public synchronized ChessColor turn() { return board.turn(); }
     public synchronized boolean currentTurnInCheck() { return board.isKingInCheck(board.turn()); }
     public synchronized StateSnapshot stateSnapshot() {
         ChessColor currentTurn = board.turn();
         return new StateSnapshot(board.toFen(), currentTurn, board.isKingInCheck(currentTurn),
                 deadlineEpochMs, List.copyOf(moves));
     }
-    public synchronized long deadlineEpochMs() { return deadlineEpochMs; }
     public synchronized Phase phase() { return phase; }
     public long startedAt() { return startedAt; }
     public synchronized List<StoredMove> moves() { return List.copyOf(moves); }

@@ -4,16 +4,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import javafx.beans.property.ReadOnlyStringWrapper;
 import javafx.geometry.Insets;
 import javafx.geometry.Side;
-import javafx.scene.Cursor;
-import javafx.scene.Parent;
-import javafx.scene.control.Button;
 import javafx.scene.control.TableColumn;
-import javafx.scene.effect.DropShadow;
 import javafx.scene.image.Image;
 import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
-import javafx.scene.text.Font;
-import javafx.scene.text.FontWeight;
 
 import java.util.Objects;
 import java.util.function.Function;
@@ -51,21 +45,6 @@ public final class UiSupport {
         root.setBackground(new Background(backgroundImage));
         StackPane.setMargin(content, new Insets(margin));
         return root;
-    }
-
-    public static void decorateCard(Region card, Color color, double radius) {
-        card.setBackground(new Background(new BackgroundFill(
-                color, new CornerRadii(radius), Insets.EMPTY)));
-        card.setEffect(new DropShadow(20, Color.rgb(0, 0, 0, 0.35)));
-    }
-
-    public static void styleButton(Button button, Color color) {
-        button.setTextFill(Color.WHITE);
-        button.setFont(Font.font("Segoe UI", FontWeight.BOLD, 12));
-        button.setPadding(new Insets(9, 15, 9, 15));
-        button.setCursor(Cursor.HAND);
-        button.setBackground(new Background(new BackgroundFill(
-                color, new CornerRadii(9), Insets.EMPTY)));
     }
 
     public static TableColumn<JsonNode, String> column(

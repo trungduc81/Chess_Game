@@ -25,6 +25,8 @@ public final class ChessServer implements AutoCloseable {
     private final long moveTimeoutMillis;
     private final long heartbeatIntervalMillis;
     private final long heartbeatTimeoutMillis;
+    private final String bootstrapAdminUsername;
+    private final String bootstrapAdminPassword;
     private final ExecutorService clientExecutor = Executors.newVirtualThreadPerTaskExecutor();
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
     private final Object matchmakingLock = new Object();
@@ -35,21 +37,21 @@ public final class ChessServer implements AutoCloseable {
     private volatile boolean running;
     private ServerSocket serverSocket;
 
-    public ChessServer(int port, ChessRepository repository) {
-        this(port, repository, Duration.ofSeconds(30), Duration.ofSeconds(5), Duration.ofSeconds(15));
-    }
-
     public ChessServer(int port, ChessRepository repository, Duration moveTimeout,
-            Duration heartbeatInterval, Duration heartbeatTimeout) {
+            Duration heartbeatInterval, Duration heartbeatTimeout,
+            String bootstrapAdminUsername, String bootstrapAdminPassword) {
         this.port = port;
         this.repository = repository;
         this.moveTimeoutMillis = moveTimeout.toMillis();
         this.heartbeatIntervalMillis = heartbeatInterval.toMillis();
         this.heartbeatTimeoutMillis = heartbeatTimeout.toMillis();
+        this.bootstrapAdminUsername = bootstrapAdminUsername == null ? "" : bootstrapAdminUsername;
+        this.bootstrapAdminPassword = bootstrapAdminPassword == null ? "" : bootstrapAdminPassword;
     }
 
     public void start() throws Exception {
         repository.initialize();
+        repository.bootstrapAdmin(bootstrapAdminUsername, bootstrapAdminPassword);
         serverSocket = new ServerSocket(port);
         running = true;
         scheduler.scheduleAtFixedRate(this::checkTimeouts, 200, 200, TimeUnit.MILLISECONDS);
@@ -83,6 +85,12 @@ public final class ChessServer implements AutoCloseable {
             }
             if (!authenticated(client, message))
                 return;
+            if ("ADMIN".equals(client.role()) && !adminMessage(message.type())
+                    && message.type() != MessageType.LOGOUT
+                    && message.type() != MessageType.MATCH_DETAIL_REQUEST) {
+                error(client, message, "Tài khoản quản trị không tham gia chức năng thi đấu");
+                return;
+            }
 
             switch (message.type()) {
                 case LOGOUT -> logout(client);
@@ -102,6 +110,12 @@ public final class ChessServer implements AutoCloseable {
                 case RANKING_REQUEST -> client.send(NetworkMessage.reply(MessageType.RANKING_RESPONSE,
                         message.requestId(), JsonProtocol.value(repository.ranking(
                                 rankingSorts(message.data())))));
+                case ADMIN_DASHBOARD_REQUEST -> adminDashboard(client, message);
+                case ADMIN_USERS_REQUEST -> adminUsers(client, message);
+                case ADMIN_LOCK_USER -> adminAccountStatus(client, message, true);
+                case ADMIN_UNLOCK_USER -> adminAccountStatus(client, message, false);
+                case ADMIN_KICK_USER -> adminKickUser(client, message);
+                case ADMIN_MATCHES_REQUEST -> adminMatches(client, message);
                 default -> error(client, message, "Loại thông điệp không hợp lệ trong trạng thái hiện tại");
             }
         } catch (Exception exception) {
@@ -151,6 +165,13 @@ public final class ChessServer implements AutoCloseable {
             error(client, message, "Sai tên đăng nhập hoặc mật khẩu");
             return;
         }
+        if ("LOCKED".equalsIgnoreCase(account.get().accountStatus())) {
+            String reason = account.get().lockedReason();
+            error(client, message, reason == null || reason.isBlank()
+                    ? "Tài khoản đã bị khóa"
+                    : "Tài khoản đã bị khóa: " + reason);
+            return;
+        }
         String token;
         boolean duplicateLogin;
         synchronized (matchmakingLock) {
@@ -160,9 +181,10 @@ public final class ChessServer implements AutoCloseable {
             } else {
                 token = UUID.randomUUID().toString();
                 client.username(username);
+                client.role(account.get().role());
                 client.sessionToken(token);
                 online.put(username, client);
-                statuses.put(username, PlayerStatus.FREE);
+                if ("PLAYER".equals(account.get().role())) statuses.put(username, PlayerStatus.FREE);
             }
         }
         if (duplicateLogin) {
@@ -170,7 +192,8 @@ public final class ChessServer implements AutoCloseable {
             return;
         }
         ObjectNode data = JsonProtocol.object().put("username", username)
-                .put("elo", account.get().elo()).put("sessionToken", token);
+                .put("elo", account.get().elo()).put("role", account.get().role())
+                .put("accountStatus", account.get().accountStatus()).put("sessionToken", token);
         client.send(new NetworkMessage(MessageType.LOGIN_SUCCESS, message.requestId(), token, null, data));
         broadcastOnlineList();
     }
@@ -449,11 +472,121 @@ public final class ChessServer implements AutoCloseable {
             error(client, message, "Mã trận không hợp lệ");
             return;
         }
-        List<StoredMove> moves = repository.matchMoves(matchId, client.username());
+        boolean admin = "ADMIN".equals(client.role());
+        List<StoredMove> moves = admin
+                ? repository.adminMatchMoves(matchId)
+                : repository.matchMoves(matchId, client.username());
         ObjectNode detail = JsonProtocol.object()
-                .put("pgn", repository.matchPgn(matchId, client.username(), moves));
+                .put("pgn", admin
+                        ? repository.adminMatchPgn(matchId, moves)
+                        : repository.matchPgn(matchId, client.username(), moves));
         detail.set("moves", JsonProtocol.value(moves));
         client.send(NetworkMessage.reply(MessageType.MATCH_DETAIL_RESPONSE, message.requestId(), detail));
+    }
+
+    private void adminDashboard(ClientConnection client, NetworkMessage message) throws SQLException {
+        if (!authenticatedAdmin(client, message)) return;
+        AdminDashboardStats stats = repository.adminDashboardStats();
+        long onlineUsers = online.values().stream()
+                .filter(connection -> "PLAYER".equals(connection.role())).count();
+        int activeGames = new HashSet<>(playerGames.values()).size();
+        ObjectNode data = JsonProtocol.object()
+                .put("totalUsers", stats.totalUsers())
+                .put("onlineUsers", onlineUsers)
+                .put("activeGames", activeGames)
+                .put("totalMatches", stats.totalMatches());
+        client.send(NetworkMessage.reply(MessageType.ADMIN_DASHBOARD_RESPONSE,
+                message.requestId(), data));
+    }
+
+    private void adminUsers(ClientConnection client, NetworkMessage message) throws SQLException {
+        if (!authenticatedAdmin(client, message)) return;
+        ArrayNode rows = JsonProtocol.MAPPER.createArrayNode();
+        for (AdminUserRow user : repository.adminUsers()) {
+            ClientConnection active = online.get(user.username());
+            boolean isOnline = active != null;
+            String onlineStatus = !isOnline ? "OFFLINE"
+                    : "PLAYER".equals(user.role())
+                            ? statuses.getOrDefault(user.username(), PlayerStatus.FREE).name()
+                            : "ONLINE";
+            ObjectNode row = JsonProtocol.object()
+                    .put("id", user.id()).put("username", user.username())
+                    .put("elo", user.elo()).put("totalMatches", user.totalMatches())
+                    .put("online", isOnline).put("onlineStatus", onlineStatus)
+                    .put("playerStatus", onlineStatus)
+                    .put("accountStatus", user.accountStatus()).put("role", user.role())
+                    .put("createdAt", user.createdAt());
+            if (user.lockedReason() == null) row.putNull("lockedReason");
+            else row.put("lockedReason", user.lockedReason());
+            rows.add(row);
+        }
+        client.send(NetworkMessage.reply(MessageType.ADMIN_USERS_RESPONSE,
+                message.requestId(), rows));
+    }
+
+    private void adminAccountStatus(ClientConnection client, NetworkMessage message,
+                                    boolean lock) throws SQLException {
+        if (!authenticatedAdmin(client, message)) return;
+        String targetUsername = text(message.data(), "username").trim();
+        String reason = text(message.data(), "reason").trim();
+        if (targetUsername.isBlank()) {
+            error(client, message, "Thiếu tên tài khoản cần xử lý");
+            return;
+        }
+        String status = lock ? "LOCKED" : "ACTIVE";
+        String action = lock ? "LOCK_USER" : "UNLOCK_USER";
+        if (!repository.setAccountStatus(client.username(), targetUsername, status,
+                lock ? reason : null, action)) {
+            error(client, message, "Không thể xử lý tài khoản này; tài khoản Admin được bảo vệ");
+            return;
+        }
+        ObjectNode result = JsonProtocol.object().put("success", true)
+                .put("username", targetUsername).put("accountStatus", status)
+                .put("message", lock ? "Đã khóa tài khoản " + targetUsername
+                        : "Đã mở khóa tài khoản " + targetUsername);
+        client.send(NetworkMessage.reply(MessageType.ADMIN_ACTION_RESULT,
+                message.requestId(), result));
+        if (lock) disconnectByAdmin(targetUsername);
+    }
+
+    private void adminKickUser(ClientConnection client, NetworkMessage message) throws SQLException {
+        if (!authenticatedAdmin(client, message)) return;
+        String targetUsername = text(message.data(), "username").trim();
+        ClientConnection target = online.get(targetUsername);
+        if (target == null || !"PLAYER".equals(target.role())
+                || !repository.logAdminAction(client.username(), targetUsername,
+                        "KICK_USER", "Ngắt kết nối bởi quản trị viên")) {
+            error(client, message, "Người chơi không online hoặc không thể bị ngắt kết nối");
+            return;
+        }
+        client.send(NetworkMessage.reply(MessageType.ADMIN_ACTION_RESULT, message.requestId(),
+                JsonProtocol.object().put("success", true).put("username", targetUsername)
+                        .put("message", "Đã ngắt kết nối " + targetUsername)));
+        disconnectByAdmin(targetUsername);
+    }
+
+    private void adminMatches(ClientConnection client, NetworkMessage message) throws SQLException {
+        if (!authenticatedAdmin(client, message)) return;
+        client.send(NetworkMessage.reply(MessageType.ADMIN_MATCHES_RESPONSE,
+                message.requestId(), JsonProtocol.value(repository.adminMatches(matchSorts(message.data())))));
+    }
+
+    private boolean authenticatedAdmin(ClientConnection client, NetworkMessage message) {
+        if (!"ADMIN".equals(client.role())) {
+            error(client, message, "Bạn không có quyền quản trị hệ thống");
+            return false;
+        }
+        return true;
+    }
+
+    private void disconnectByAdmin(String username) {
+        ClientConnection target = online.get(username);
+        if (target == null) return;
+        try {
+            target.close();
+        } catch (IOException ignored) {
+        }
+        disconnected(target);
     }
 
     private void finishClaimed(GameSession game, String result, String reason) {
@@ -615,7 +748,9 @@ public final class ChessServer implements AutoCloseable {
 
     private void broadcastOnlineList() {
         ArrayNode list = JsonProtocol.MAPPER.createArrayNode();
-        online.keySet().stream().sorted().forEach(username -> {
+        online.entrySet().stream()
+                .filter(entry -> "PLAYER".equals(entry.getValue().role()))
+                .map(Map.Entry::getKey).sorted().forEach(username -> {
             ObjectNode row = JsonProtocol.object().put("username", username)
                     .put("status", statuses.getOrDefault(username, PlayerStatus.FREE).name());
             try {
@@ -626,7 +761,8 @@ public final class ChessServer implements AutoCloseable {
             list.add(row);
         });
         NetworkMessage message = NetworkMessage.of(MessageType.ONLINE_LIST, list);
-        online.values().forEach(connection -> connection.send(message));
+        online.values().stream().filter(connection -> "PLAYER".equals(connection.role()))
+                .forEach(connection -> connection.send(message));
     }
 
     private static String winnerWhenLoses(GameSession game, String loser) {
@@ -635,6 +771,29 @@ public final class ChessServer implements AutoCloseable {
 
     private static String text(JsonNode data, String field) {
         return data.path(field).asText("");
+    }
+
+    private static boolean adminMessage(MessageType type) {
+        return switch (type) {
+            case ADMIN_DASHBOARD_REQUEST, ADMIN_USERS_REQUEST, ADMIN_LOCK_USER,
+                    ADMIN_UNLOCK_USER, ADMIN_KICK_USER, ADMIN_MATCHES_REQUEST -> true;
+            default -> false;
+        };
+    }
+
+    private static List<MatchSort> matchSorts(JsonNode data) {
+        List<MatchSort> sorts = new ArrayList<>();
+        for (JsonNode item : data.path("sorts")) {
+            try {
+                var field = MatchSort.Field.valueOf(
+                        item.path("field").asText().toUpperCase(Locale.ROOT));
+                sorts.add(new MatchSort(field,
+                        "ASC".equalsIgnoreCase(item.path("direction").asText())));
+            } catch (IllegalArgumentException ignored) {
+                // Chỉ chấp nhận tên cột trong danh sách trắng.
+            }
+        }
+        return sorts;
     }
 
     private static List<RankingSort> rankingSorts(JsonNode data) {

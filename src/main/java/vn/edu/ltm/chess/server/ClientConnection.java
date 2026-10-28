@@ -14,6 +14,7 @@ public final class ClientConnection implements Runnable, AutoCloseable {
     private final LimitedLineReader reader;
     private final BufferedWriter writer;
     private volatile String username;
+    private volatile String role = "PLAYER";
     private volatile String sessionToken;
     private volatile long lastSeenAt = System.currentTimeMillis();
 
@@ -51,6 +52,8 @@ public final class ClientConnection implements Runnable, AutoCloseable {
 
     public String username() { return username; }
     public void username(String username) { this.username = username; }
+    public String role() { return role; }
+    public void role(String role) { this.role = role; }
     public String sessionToken() { return sessionToken; }
     public void sessionToken(String sessionToken) { this.sessionToken = sessionToken; }
     public long lastSeenAt() { return lastSeenAt; }

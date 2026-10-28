@@ -29,12 +29,6 @@
     -fx-background-color: rgba(255, 255, 255, 0.09);
 }
 
-.lobby-icon {
-    -fx-font-family: "Segoe UI Symbol";
-    -fx-font-size: 30px;
-    -fx-text-fill: #cf7317;
-}
-
 .lobby-greeting {
     -fx-font-size: 20px;
     -fx-font-weight: 900;
@@ -237,12 +231,6 @@
     -fx-padding: 0 12px;
 }
 
-.player-icon {
-    -fx-font-family: "Segoe UI Symbol";
-    -fx-font-size: 20px;
-    -fx-text-fill: #ff9d3f;
-}
-
 .player-name-cell,
 .elo-cell {
     -fx-text-fill: #f1f5f9;
@@ -265,12 +253,6 @@
 .status-busy {
     -fx-background-color: rgba(207, 115, 23, 0.25);
     -fx-text-fill: #ff9d3f;
-}
-
-.empty-player-icon {
-    -fx-font-family: "Segoe UI Symbol";
-    -fx-font-size: 35px;
-    -fx-text-fill: rgba(148, 163, 184, 0.48);
 }
 
 .empty-player-text {

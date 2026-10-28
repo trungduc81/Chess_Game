@@ -7,7 +7,8 @@ import vn.edu.ltm.chess.repository.Database;
 import java.time.Duration;
 
 public final class ServerMain {
-    private ServerMain() { }
+    private ServerMain() {
+    }
 
     public static void main(String[] args) throws Exception {
         AppConfig config = AppConfig.load();
@@ -15,9 +16,13 @@ public final class ServerMain {
         ChessServer server = new ChessServer(port, new ChessRepository(new Database(config)),
                 Duration.ofSeconds(config.moveTimeoutSeconds()),
                 Duration.ofSeconds(config.heartbeatIntervalSeconds()),
-                Duration.ofSeconds(config.heartbeatTimeoutSeconds()));
+                Duration.ofSeconds(config.heartbeatTimeoutSeconds()),
+                config.adminUsername(), config.adminPassword());
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            try { server.close(); } catch (Exception ignored) { }
+            try {
+                server.close();
+            } catch (Exception ignored) {
+            }
         }));
         server.start();
     }

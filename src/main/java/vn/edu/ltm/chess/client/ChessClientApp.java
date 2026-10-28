@@ -7,6 +7,9 @@ import javafx.scene.Node;
 import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.stage.Stage;
+import vn.edu.ltm.chess.client.ui.AdminDashboardView;
+import vn.edu.ltm.chess.client.ui.AdminMatchesView;
+import vn.edu.ltm.chess.client.ui.AdminUsersView;
 import vn.edu.ltm.chess.client.ui.DialogOverlay;
 import vn.edu.ltm.chess.client.ui.GameView;
 import vn.edu.ltm.chess.client.ui.LobbyView;
@@ -43,20 +46,27 @@ public final class ChessClientApp extends Application {
     private Scene scene;
     private NetworkClient network;
     private String username;
+    private String role = "PLAYER";
     private int currentElo = 1200;
     private LoginView loginView;
     private LobbyView lobbyView;
     private GameView gameView;
-    private ProfileView profileView;
     private RankingView rankingView;
     private ReplayView replayView;
+    private AdminDashboardView adminDashboardView;
+    private AdminUsersView adminUsersView;
+    private AdminMatchesView adminMatchesView;
     private JsonNode latestOnlinePlayers = JsonProtocol.MAPPER.createArrayNode();
     private JsonNode cachedHistoryRows;
     private JsonNode selectedHistoryMatch;
+    private JsonNode cachedAdminMatches;
+    private JsonNode adminMatchFilter = JsonProtocol.object();
+    private JsonNode selectedAdminMatch;
 
     @Override
     public void start(Stage stage) {
         this.stage = stage;
+        SoundManager.initialize();
         stage.setMinWidth(MIN_WIDTH);
         stage.setMinHeight(MIN_HEIGHT);
         stage.setResizable(true);
@@ -72,8 +82,10 @@ public final class ChessClientApp extends Application {
         stopGameView();
         stopReplayView();
         lobbyView = null;
-        profileView = null;
         rankingView = null;
+        adminDashboardView = null;
+        adminUsersView = null;
+        adminMatchesView = null;
         loginView = new LoginView(this::authenticate);
         showScreen(loginView.root(), stylesheet("/styles/login.css", "Không tìm thấy CSS đăng nhập"));
     }
@@ -98,9 +110,15 @@ public final class ChessClientApp extends Application {
                 if (loginView != null && loginView.isSubmitting())
                     loginView.completeRequest();
                 username = message.data().path("username").asText();
+                role = message.data().path("role").asText("PLAYER").toUpperCase();
                 currentElo = message.data().path("elo").asInt(1200);
                 latestOnlinePlayers = JsonProtocol.MAPPER.createArrayNode();
-                showLobby();
+                if ("ADMIN".equals(role)) {
+                    showAdminDashboard(JsonProtocol.object());
+                    request(MessageType.ADMIN_DASHBOARD_REQUEST);
+                } else {
+                    showLobby();
+                }
             }
             case ONLINE_LIST -> {
                 updateCurrentElo(message.data());
@@ -137,7 +155,10 @@ public final class ChessClientApp extends Application {
                     DialogOverlay.information(popupOwner(), "THÔNG BÁO", responseMessage);
                 }
             }
-            case GAME_STARTED -> showGame(message.data());
+            case GAME_STARTED -> {
+                showGame(message.data());
+                SoundManager.play(SoundManager.Effect.GAME_START);
+            }
             case GAME_STATE -> {
                 if (gameView != null)
                     gameView.updateState(message.data());
@@ -146,8 +167,11 @@ public final class ChessClientApp extends Application {
                 if (gameView != null)
                     gameView.showLegalMoves(message.data());
             }
-            case MOVE_REJECTED -> DialogOverlay.warning(popupOwner(),
-                    "THÔNG BÁO", message.data().path("message").asText());
+            case MOVE_REJECTED -> {
+                SoundManager.play(SoundManager.Effect.ILLEGAL);
+                DialogOverlay.warning(popupOwner(),
+                        "THÔNG BÁO", message.data().path("message").asText());
+            }
             case ERROR -> {
                 String responseMessage = message.data().path("message").asText("Yêu cầu không hợp lệ");
                 if (loginView != null && loginView.isSubmitting()) {
@@ -191,10 +215,12 @@ public final class ChessClientApp extends Application {
                 showProfile(cachedHistoryRows);
             }
             case MATCH_DETAIL_RESPONSE -> {
-                if (selectedHistoryMatch != null) {
-                    JsonNode detail = message.data();
-                    JsonNode moves = detail.isArray() ? detail : detail.path("moves");
-                    String pgn = detail.isArray() ? "" : detail.path("pgn").asText("");
+                JsonNode detail = message.data();
+                JsonNode moves = detail.isArray() ? detail : detail.path("moves");
+                String pgn = detail.isArray() ? "" : detail.path("pgn").asText("");
+                if (selectedAdminMatch != null) {
+                    showAdminReplay(selectedAdminMatch, moves, pgn);
+                } else if (selectedHistoryMatch != null) {
                     showReplay(selectedHistoryMatch, moves, pgn);
                 }
             }
@@ -203,6 +229,24 @@ public final class ChessClientApp extends Application {
                     showRanking(message.data());
                 else
                     rankingView.updateRows(message.data());
+            }
+            case ADMIN_DASHBOARD_RESPONSE -> {
+                if (adminDashboardView == null) showAdminDashboard(message.data());
+                else adminDashboardView.updateStatistics(message.data());
+            }
+            case ADMIN_USERS_RESPONSE -> {
+                if (adminUsersView == null) showAdminUsers(message.data());
+                else adminUsersView.updateRows(message.data());
+            }
+            case ADMIN_MATCHES_RESPONSE -> {
+                cachedAdminMatches = message.data().deepCopy();
+                if (adminMatchesView == null) showAdminMatches(message.data());
+                else adminMatchesView.updateRows(message.data());
+            }
+            case ADMIN_ACTION_RESULT -> {
+                DialogOverlay.information(popupOwner(), "THAO TÁC QUẢN TRỊ",
+                        message.data().path("message").asText("Thao tác thành công"));
+                if (adminUsersView != null) request(MessageType.ADMIN_USERS_REQUEST);
             }
             case DISCONNECTED -> handleDisconnect(message.data());
             default -> {
@@ -213,7 +257,6 @@ public final class ChessClientApp extends Application {
     private void showLobby() {
         stopGameView();
         stopReplayView();
-        profileView = null;
         rankingView = null;
         cachedHistoryRows = null;
         selectedHistoryMatch = null;
@@ -247,7 +290,7 @@ public final class ChessClientApp extends Application {
         stopReplayView();
         lobbyView = null;
         rankingView = null;
-        profileView = new ProfileView(username, currentElo, rows, this::showLobby, match -> {
+        ProfileView profileView = new ProfileView(username, currentElo, rows, this::showLobby, match -> {
             selectedHistoryMatch = match.deepCopy();
             send(NetworkMessage.of(MessageType.MATCH_DETAIL_REQUEST,
                     JsonProtocol.object().put("matchId", match.path("id").asLong())));
@@ -258,7 +301,6 @@ public final class ChessClientApp extends Application {
     private void showRanking(JsonNode rows) {
         stopReplayView();
         lobbyView = null;
-        profileView = null;
         rankingView = new RankingView(username, rows, this::showLobby,
                 request -> send(NetworkMessage.of(MessageType.RANKING_REQUEST, request)));
         showRecordsScene(rankingView.root());
@@ -267,7 +309,6 @@ public final class ChessClientApp extends Application {
     private void showReplay(JsonNode match, JsonNode moves, String pgn) {
         stopReplayView();
         lobbyView = null;
-        profileView = null;
         rankingView = null;
         replayView = new ReplayView(match, moves, pgn, this::returnToProfile);
         showRecordsScene(replayView.root());
@@ -281,10 +322,113 @@ public final class ChessClientApp extends Application {
         }
     }
 
+    private void showAdminDashboard(JsonNode statistics) {
+        stopGameView();
+        stopReplayView();
+        clearPlayerViews();
+        adminUsersView = null;
+        adminMatchesView = null;
+        selectedAdminMatch = null;
+        adminDashboardView = new AdminDashboardView(username, statistics,
+                new AdminDashboardView.Actions() {
+                    @Override public void showUsers() { request(MessageType.ADMIN_USERS_REQUEST); }
+                    @Override public void showMatches() {
+                        adminMatchFilter = JsonProtocol.object();
+                        request(MessageType.ADMIN_MATCHES_REQUEST);
+                    }
+                    @Override public void refresh() { request(MessageType.ADMIN_DASHBOARD_REQUEST); }
+                    @Override public void logout() { ChessClientApp.this.logout(); }
+                });
+        showAdminScene(adminDashboardView.root());
+    }
+
+    private void showAdminUsers(JsonNode rows) {
+        stopReplayView();
+        clearPlayerViews();
+        adminDashboardView = null;
+        adminMatchesView = null;
+        selectedAdminMatch = null;
+        adminUsersView = new AdminUsersView(username, rows, new AdminUsersView.Actions() {
+            @Override public void back() { request(MessageType.ADMIN_DASHBOARD_REQUEST); }
+            @Override public void refresh() { request(MessageType.ADMIN_USERS_REQUEST); }
+            @Override public void lock(String target, String reason) {
+                send(NetworkMessage.of(MessageType.ADMIN_LOCK_USER,
+                        JsonProtocol.object().put("username", target).put("reason", reason)));
+            }
+            @Override public void unlock(String target) {
+                send(NetworkMessage.of(MessageType.ADMIN_UNLOCK_USER,
+                        JsonProtocol.object().put("username", target)));
+            }
+            @Override public void kick(String target) {
+                send(NetworkMessage.of(MessageType.ADMIN_KICK_USER,
+                        JsonProtocol.object().put("username", target)));
+            }
+        });
+        showAdminScene(adminUsersView.root());
+    }
+
+    private void showAdminMatches(JsonNode rows) {
+        stopReplayView();
+        clearPlayerViews();
+        adminDashboardView = null;
+        adminUsersView = null;
+        selectedAdminMatch = null;
+        adminMatchesView = new AdminMatchesView(rows, new AdminMatchesView.Actions() {
+            @Override public void back() { request(MessageType.ADMIN_DASHBOARD_REQUEST); }
+            @Override public void refresh() {
+                send(NetworkMessage.of(MessageType.ADMIN_MATCHES_REQUEST, adminMatchFilter));
+            }
+            @Override public void filter(JsonNode filter) {
+                adminMatchFilter = filter.deepCopy();
+                send(NetworkMessage.of(MessageType.ADMIN_MATCHES_REQUEST, adminMatchFilter));
+            }
+            @Override public void replay(JsonNode match) {
+                selectedAdminMatch = match.deepCopy();
+                send(NetworkMessage.of(MessageType.MATCH_DETAIL_REQUEST,
+                        JsonProtocol.object().put("matchId", match.path("id").asLong())));
+            }
+        }, adminMatchFilter);
+        showAdminScene(adminMatchesView.root());
+    }
+
+    private void showAdminReplay(JsonNode match, JsonNode moves, String pgn) {
+        stopReplayView();
+        clearPlayerViews();
+        adminDashboardView = null;
+        adminUsersView = null;
+        adminMatchesView = null;
+        replayView = new ReplayView(match, moves, pgn,
+                "Quay lại Danh sách trận đấu", this::returnToAdminMatches);
+        showAdminScene(replayView.root(),
+                stylesheet("/styles/records.css", "Không tìm thấy CSS replay"));
+    }
+
+    private void returnToAdminMatches() {
+        if (cachedAdminMatches != null) showAdminMatches(cachedAdminMatches);
+        else request(MessageType.ADMIN_MATCHES_REQUEST);
+    }
+
     private void showRecordsScene(Parent root) {
         showScreen(root,
                 stylesheet("/styles/lobby.css", "Không tìm thấy CSS sảnh chờ"),
                 stylesheet("/styles/records.css", "Không tìm thấy CSS lịch sử và xếp hạng"));
+    }
+
+    private void showAdminScene(Parent root, String... additionalStylesheets) {
+        String[] stylesheets = new String[additionalStylesheets.length + 1];
+        stylesheets[0] = stylesheet("/styles/admin.css", "Không tìm thấy CSS quản trị");
+        System.arraycopy(additionalStylesheets, 0, stylesheets, 1, additionalStylesheets.length);
+        showScreen(root, stylesheets);
+    }
+
+    private void request(MessageType type) {
+        send(NetworkMessage.of(type, JsonProtocol.object()));
+    }
+
+    private void clearPlayerViews() {
+        lobbyView = null;
+        rankingView = null;
+        selectedHistoryMatch = null;
     }
 
     private void updateCurrentElo(JsonNode players) {
@@ -300,11 +444,11 @@ public final class ChessClientApp extends Application {
 
     private void handleChallenge(JsonNode data) {
         String challengeId = data.path("challengeId").asText();
-        if (gameView != null) {
+        if (gameView != null || "ADMIN".equals(role)) {
             answerChallenge(challengeId, false);
             return;
         }
-        SoundManager.play(SoundManager.Effect.CHALLENGE);
+        SoundManager.play(SoundManager.Effect.NOTIFY);
         DialogOverlay.challenge(popupOwner(), data.path("challenger").asText(),
                 data.path("challengerElo").asInt(1200),
                 accept -> answerChallenge(challengeId, accept));
@@ -320,7 +464,6 @@ public final class ChessClientApp extends Application {
         stopReplayView();
         gameView = new GameView(username, data, this::send, this::showLobby);
         lobbyView = null;
-        profileView = null;
         rankingView = null;
         cachedHistoryRows = null;
         selectedHistoryMatch = null;
@@ -358,27 +501,32 @@ public final class ChessClientApp extends Application {
             } catch (Exception ignored) {
             }
         }
-        network = null;
-        username = null;
-        currentElo = 1200;
-        latestOnlinePlayers = JsonProtocol.MAPPER.createArrayNode();
-        cachedHistoryRows = null;
-        selectedHistoryMatch = null;
+        clearSession();
         showLogin();
     }
 
     private void handleDisconnect(JsonNode data) {
         SoundManager.play(SoundManager.Effect.DISCONNECT);
         stopGameView();
+        clearSession();
+        showLogin();
+        DialogOverlay.disconnected(loginView.root(), data.path("message").asText(), () -> {
+        });
+    }
+
+    private void clearSession() {
         network = null;
         username = null;
+        role = "PLAYER";
         currentElo = 1200;
         latestOnlinePlayers = JsonProtocol.MAPPER.createArrayNode();
         cachedHistoryRows = null;
         selectedHistoryMatch = null;
-        showLogin();
-        DialogOverlay.disconnected(loginView.root(), data.path("message").asText(), () -> {
-        });
+        cachedAdminMatches = null;
+        selectedAdminMatch = null;
+        adminDashboardView = null;
+        adminUsersView = null;
+        adminMatchesView = null;
     }
 
     private void send(NetworkMessage message) {

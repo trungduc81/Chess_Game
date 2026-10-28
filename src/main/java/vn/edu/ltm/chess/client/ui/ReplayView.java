@@ -44,6 +44,11 @@ public final class ReplayView {
     private int index = -1;
 
     public ReplayView(JsonNode match, JsonNode moveRows, String pgn, Runnable backToProfile) {
+        this(match, moveRows, pgn, "Quay lại Hồ sơ", backToProfile);
+    }
+
+    public ReplayView(JsonNode match, JsonNode moveRows, String pgn,
+                      String backButtonText, Runnable backAction) {
         moveRows.forEach(moves::add);
         sanMoves.addAll(parsePgnMoves(pgn));
         if (sanMoves.size() != moves.size()) {
@@ -62,11 +67,11 @@ public final class ReplayView {
         result.getStyleClass().add("replay-result");
         VBox matchInfo = new VBox(3, title, players, result);
 
-        Button back = new Button("Quay lại Hồ sơ");
+        Button back = new Button(backButtonText);
         back.getStyleClass().add("btn-secondary");
         back.setOnAction(event -> {
             stop();
-            backToProfile.run();
+            backAction.run();
         });
         Region headerSpacer = new Region();
         HBox.setHgrow(headerSpacer, Priority.ALWAYS);
@@ -107,7 +112,7 @@ public final class ReplayView {
         root = UiSupport.photoRoot("/images/login_background.png", card, 0.10, 18);
         root.getStyleClass().addAll("records-root", "replay-root");
 
-        showPosition(-1);
+        showPosition(-1, false);
     }
 
     public Parent root() { return root; }
@@ -173,10 +178,11 @@ public final class ReplayView {
 
     private void showManually(int target) {
         stop();
-        showPosition(target);
+        showPosition(target, true);
     }
 
-    private void showPosition(int target) {
+    private void showPosition(int target, boolean playSound) {
+        int previousIndex = index;
         index = Math.max(-1, Math.min(target, moves.size() - 1));
         if (index < 0) {
             board.render(initialFen, false);
@@ -190,6 +196,11 @@ public final class ReplayView {
                     + ": " + sanMoves.get(index));
             moveTable.scrollTo(index / 2);
         }
+        if (playSound && index != previousIndex) {
+            SoundManager.play(index < 0
+                    ? SoundManager.Effect.MOVE
+                    : SoundManager.moveEffect(sanMoves.get(index)));
+        }
         moveTable.refresh();
         updateControls();
     }
@@ -200,14 +211,14 @@ public final class ReplayView {
             return;
         }
         if (moves.isEmpty()) return;
-        if (index >= moves.size() - 1) showPosition(-1);
+        if (index >= moves.size() - 1) showPosition(-1, false);
         autoplayButton.setText("⏸ Dừng");
         autoplay.playFromStart();
     }
 
     private void advanceAutoplay() {
         if (index < moves.size() - 1) {
-            showPosition(index + 1);
+            showPosition(index + 1, true);
         } else {
             stop();
         }

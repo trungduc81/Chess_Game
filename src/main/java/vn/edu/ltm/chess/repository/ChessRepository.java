@@ -30,6 +30,9 @@ public final class ChessRepository {
                       password_hash VARCHAR(128) NOT NULL,
                       password_salt VARCHAR(64) NOT NULL,
                       elo INT NOT NULL DEFAULT 1200,
+                      role VARCHAR(20) NOT NULL DEFAULT 'PLAYER',
+                      account_status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+                      locked_reason VARCHAR(255),
                       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                     )""");
             statement.executeUpdate("""
@@ -73,6 +76,42 @@ public final class ChessRepository {
                       UNIQUE KEY uq_match_ply (match_id, ply)
                     )""");
             ensureColumn(connection, "matches", "pgn", "TEXT NULL");
+            ensureColumn(connection, "users", "role", "VARCHAR(20) NOT NULL DEFAULT 'PLAYER'");
+            ensureColumn(connection, "users", "account_status",
+                    "VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'");
+            ensureColumn(connection, "users", "locked_reason", "VARCHAR(255) NULL");
+            statement.executeUpdate("""
+                    CREATE TABLE IF NOT EXISTS admin_audit_logs (
+                      id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                      admin_id BIGINT NOT NULL,
+                      action VARCHAR(50) NOT NULL,
+                      target_user_id BIGINT,
+                      description VARCHAR(255),
+                      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      CONSTRAINT fk_audit_admin FOREIGN KEY (admin_id) REFERENCES users(id),
+                      CONSTRAINT fk_audit_target FOREIGN KEY (target_user_id) REFERENCES users(id),
+                      INDEX idx_audit_created (created_at)
+                    )""");
+        }
+    }
+
+    public void bootstrapAdmin(String username, String password) throws SQLException {
+        if (username == null || username.isBlank() || password == null || password.isBlank()) return;
+        if (!username.matches("[A-Za-z0-9_]{3,40}") || password.length() < 6) {
+            throw new SQLException("CHESS_ADMIN_USERNAME hoặc CHESS_ADMIN_PASSWORD không hợp lệ");
+        }
+        PasswordHasher.Hash hash = PasswordHasher.create(password);
+        try (Connection connection = database.connection();
+             PreparedStatement statement = connection.prepareStatement("""
+                     INSERT INTO users(username,password_hash,password_salt,elo,role,account_status,locked_reason)
+                     VALUES(?,?,?,?, 'ADMIN','ACTIVE',NULL)
+                     ON DUPLICATE KEY UPDATE password_hash=VALUES(password_hash),
+                       password_salt=VALUES(password_salt),role='ADMIN',account_status='ACTIVE',locked_reason=NULL""")) {
+            statement.setString(1, username);
+            statement.setString(2, hash.value());
+            statement.setString(3, hash.salt());
+            statement.setInt(4, EloCalculator.DEFAULT_ELO);
+            statement.executeUpdate();
         }
     }
 
@@ -95,7 +134,8 @@ public final class ChessRepository {
     public Optional<UserAccount> authenticate(String username, String password) throws SQLException {
         try (Connection connection = database.connection();
              PreparedStatement statement = connection.prepareStatement(
-                     "SELECT id,username,password_hash,password_salt,elo FROM users WHERE username=?")) {
+                     "SELECT id,username,password_hash,password_salt,elo,role,account_status,locked_reason "
+                             + "FROM users WHERE username=?")) {
             statement.setString(1, username);
             try (ResultSet result = statement.executeQuery()) {
                 if (!result.next() || !PasswordHasher.verify(password,
@@ -103,8 +143,121 @@ public final class ChessRepository {
                     return Optional.empty();
                 }
                 return Optional.of(new UserAccount(result.getLong("id"), result.getString("username"),
-                        result.getInt("elo")));
+                        result.getInt("elo"), result.getString("role"),
+                        result.getString("account_status"), result.getString("locked_reason")));
             }
+        }
+    }
+
+    public AdminDashboardStats adminDashboardStats() throws SQLException {
+        try (Connection connection = database.connection(); Statement statement = connection.createStatement();
+             ResultSet result = statement.executeQuery("""
+                     SELECT (SELECT COUNT(*) FROM users WHERE role='PLAYER') total_users,
+                            (SELECT COUNT(*) FROM matches) total_matches""")) {
+            result.next();
+            return new AdminDashboardStats(result.getInt("total_users"), result.getLong("total_matches"));
+        }
+    }
+
+    public List<AdminUserRow> adminUsers() throws SQLException {
+        String sql = """
+                SELECT u.id,u.username,u.elo,u.role,u.account_status,u.locked_reason,u.created_at,
+                       COUNT(m.id) total_matches
+                FROM users u
+                LEFT JOIN matches m ON m.white_player_id=u.id OR m.black_player_id=u.id
+                GROUP BY u.id,u.username,u.elo,u.role,u.account_status,u.locked_reason,u.created_at
+                ORDER BY u.role DESC,u.username ASC""";
+        List<AdminUserRow> rows = new ArrayList<>();
+        try (Connection connection = database.connection(); Statement statement = connection.createStatement();
+             ResultSet result = statement.executeQuery(sql)) {
+            while (result.next()) {
+                Timestamp createdAt = result.getTimestamp("created_at");
+                rows.add(new AdminUserRow(result.getLong("id"), result.getString("username"),
+                        result.getInt("elo"), result.getInt("total_matches"),
+                        result.getString("account_status"), result.getString("role"),
+                        createdAt == null ? 0 : createdAt.getTime(), result.getString("locked_reason")));
+            }
+        }
+        return rows;
+    }
+
+    public List<MatchSummary> adminMatches(List<MatchSort> sorts) throws SQLException {
+        String sql = """
+                SELECT m.id,w.username white_name,b.username black_name,m.result,m.reason,m.move_count,
+                       m.initial_fen,m.white_elo_delta,m.black_elo_delta,
+                       UNIX_TIMESTAMP(m.started_at)*1000 started_ms,
+                       UNIX_TIMESTAMP(m.ended_at)*1000 ended_ms
+                FROM matches m JOIN users w ON w.id=m.white_player_id JOIN users b ON b.id=m.black_player_id
+                """ + " ORDER BY " + matchOrder(sorts);
+        List<MatchSummary> rows = new ArrayList<>();
+        try (Connection connection = database.connection(); Statement statement = connection.createStatement();
+             ResultSet result = statement.executeQuery(sql)) {
+            while (result.next()) rows.add(matchSummary(result));
+        }
+        return rows;
+    }
+
+    static String matchOrder(List<MatchSort> requested) {
+        List<MatchSort> sorts = requested == null || requested.isEmpty()
+                ? List.of(new MatchSort(MatchSort.Field.TIME, false),
+                        new MatchSort(MatchSort.Field.MOVE_COUNT, false)) : requested;
+        List<String> order = new ArrayList<>();
+        EnumSet<MatchSort.Field> used = EnumSet.noneOf(MatchSort.Field.class);
+        for (MatchSort sort : sorts) {
+            if (sort == null || sort.field() == null || !used.add(sort.field())) continue;
+            String column = switch (sort.field()) {
+                case TIME -> "m.ended_at";
+                case MOVE_COUNT -> "m.move_count";
+                case ID -> "m.id";
+            };
+            order.add(column + (sort.ascending() ? " ASC" : " DESC"));
+        }
+        if (!used.contains(MatchSort.Field.ID)) order.add("m.id DESC");
+        return String.join(", ", order);
+    }
+
+    public boolean setAccountStatus(String adminUsername, String targetUsername, String status,
+                                    String reason, String action) throws SQLException {
+        try (Connection connection = database.connection()) {
+            connection.setAutoCommit(false);
+            try {
+                UserIdentity admin = findIdentity(connection, adminUsername, true);
+                UserIdentity target = findIdentity(connection, targetUsername, true);
+                if (admin == null || target == null || !"ADMIN".equals(admin.role())
+                        || "ADMIN".equals(target.role()) || admin.id() == target.id()) {
+                    connection.rollback();
+                    return false;
+                }
+                try (PreparedStatement update = connection.prepareStatement(
+                        "UPDATE users SET account_status=?,locked_reason=? WHERE id=?")) {
+                    update.setString(1, status);
+                    if (reason == null || reason.isBlank()) update.setNull(2, Types.VARCHAR);
+                    else update.setString(2, reason);
+                    update.setLong(3, target.id());
+                    update.executeUpdate();
+                }
+                insertAudit(connection, admin.id(), target.id(), action, reason);
+                connection.commit();
+                return true;
+            } catch (Exception exception) {
+                connection.rollback();
+                if (exception instanceof SQLException sql) throw sql;
+                throw new SQLException(exception);
+            } finally {
+                connection.setAutoCommit(true);
+            }
+        }
+    }
+
+    public boolean logAdminAction(String adminUsername, String targetUsername,
+                                  String action, String description) throws SQLException {
+        try (Connection connection = database.connection()) {
+            UserIdentity admin = findIdentity(connection, adminUsername, false);
+            UserIdentity target = findIdentity(connection, targetUsername, false);
+            if (admin == null || target == null || !"ADMIN".equals(admin.role())
+                    || "ADMIN".equals(target.role()) || admin.id() == target.id()) return false;
+            insertAudit(connection, admin.id(), target.id(), action, description);
+            return true;
         }
     }
 
@@ -206,18 +359,26 @@ public final class ChessRepository {
             statement.setString(1, username);
             statement.setString(2, username);
             try (ResultSet result = statement.executeQuery()) {
-                while (result.next()) rows.add(new MatchSummary(result.getLong("id"), result.getString("white_name"),
-                        result.getString("black_name"), result.getString("result"), result.getString("reason"),
-                        result.getInt("move_count"), result.getString("initial_fen"),
-                        result.getInt("white_elo_delta"),
-                        result.getInt("black_elo_delta"), result.getLong("started_ms"), result.getLong("ended_ms")));
+                while (result.next()) rows.add(matchSummary(result));
             }
         }
         return rows;
     }
 
     public List<StoredMove> matchMoves(long matchId, String username) throws SQLException {
-        String sql = """
+        return matchMoves(matchId, username, false);
+    }
+
+    public List<StoredMove> adminMatchMoves(long matchId) throws SQLException {
+        return matchMoves(matchId, null, true);
+    }
+
+    private List<StoredMove> matchMoves(long matchId, String username, boolean admin) throws SQLException {
+        String sql = admin ? """
+                SELECT mv.ply,mv.from_square,mv.to_square,mv.promotion,mv.notation,mv.fen_after,
+                       UNIX_TIMESTAMP(mv.played_at)*1000 played_ms,m.initial_fen
+                FROM moves mv JOIN matches m ON m.id=mv.match_id
+                WHERE mv.match_id=? ORDER BY mv.ply""" : """
                 SELECT mv.ply,mv.from_square,mv.to_square,mv.promotion,mv.notation,mv.fen_after,
                        UNIX_TIMESTAMP(mv.played_at)*1000 played_ms,m.initial_fen
                 FROM moves mv JOIN matches m ON m.id=mv.match_id
@@ -226,8 +387,10 @@ public final class ChessRepository {
         List<StoredMove> moves = new ArrayList<>();
         try (Connection connection = database.connection(); PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setLong(1, matchId);
-            statement.setString(2, username);
-            statement.setString(3, username);
+            if (!admin) {
+                statement.setString(2, username);
+                statement.setString(3, username);
+            }
             String initialFen = null;
             try (ResultSet result = statement.executeQuery()) {
                 while (result.next()) {
@@ -247,14 +410,25 @@ public final class ChessRepository {
     }
 
     public String matchPgn(long matchId, String username, List<StoredMove> moves) throws SQLException {
-        String sql = """
+        return matchPgn(matchId, username, moves, false);
+    }
+
+    public String adminMatchPgn(long matchId, List<StoredMove> moves) throws SQLException {
+        return matchPgn(matchId, null, moves, true);
+    }
+
+    private String matchPgn(long matchId, String username, List<StoredMove> moves,
+                            boolean admin) throws SQLException {
+        String sql = admin ? "SELECT COALESCE(pgn,'') pgn,result FROM matches WHERE id=?" : """
                 SELECT COALESCE(m.pgn,'') pgn,m.result
                 FROM matches m JOIN users w ON w.id=m.white_player_id JOIN users b ON b.id=m.black_player_id
                 WHERE m.id=? AND (w.username=? OR b.username=?)""";
         try (Connection connection = database.connection(); PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setLong(1, matchId);
-            statement.setString(2, username);
-            statement.setString(3, username);
+            if (!admin) {
+                statement.setString(2, username);
+                statement.setString(3, username);
+            }
             String pgn;
             String matchResult;
             try (ResultSet result = statement.executeQuery()) {
@@ -288,7 +462,8 @@ public final class ChessRepository {
                   SELECT u.id,u.username,u.elo,
                     COALESCE(SUM(pg.won),0) wins,
                     COUNT(pg.match_id) total_matches
-                  FROM users u LEFT JOIN player_games pg ON pg.player_id=u.id
+                FROM users u LEFT JOIN player_games pg ON pg.player_id=u.id
+                  WHERE u.role='PLAYER'
                   GROUP BY u.id,u.username,u.elo
                 ) SELECT username,elo,wins,total_matches,
                          CASE WHEN total_matches=0 THEN 0
@@ -392,6 +567,41 @@ public final class ChessRepository {
         }
     }
 
+    private static MatchSummary matchSummary(ResultSet result) throws SQLException {
+        return new MatchSummary(result.getLong("id"), result.getString("white_name"),
+                result.getString("black_name"), result.getString("result"),
+                result.getString("reason"), result.getInt("move_count"),
+                result.getString("initial_fen"), result.getInt("white_elo_delta"),
+                result.getInt("black_elo_delta"), result.getLong("started_ms"),
+                result.getLong("ended_ms"));
+    }
+
+    private static UserIdentity findIdentity(Connection connection, String username,
+                                             boolean lock) throws SQLException {
+        String sql = "SELECT id,role FROM users WHERE username=?" + (lock ? " FOR UPDATE" : "");
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, username);
+            try (ResultSet result = statement.executeQuery()) {
+                if (!result.next()) return null;
+                return new UserIdentity(result.getLong("id"), result.getString("role"));
+            }
+        }
+    }
+
+    private static void insertAudit(Connection connection, long adminId, long targetId,
+                                    String action, String description) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO admin_audit_logs(admin_id,action,target_user_id,description)
+                VALUES(?,?,?,?)""")) {
+            statement.setLong(1, adminId);
+            statement.setString(2, action);
+            statement.setLong(3, targetId);
+            if (description == null || description.isBlank()) statement.setNull(4, Types.VARCHAR);
+            else statement.setString(4, description);
+            statement.executeUpdate();
+        }
+    }
+
     private static void ensureColumn(Connection connection, String table, String column,
                                      String definition) throws SQLException {
         try (ResultSet columns = connection.getMetaData()
@@ -453,4 +663,5 @@ public final class ChessRepository {
     }
 
     private record PlayerRow(long id, int elo) { }
+    private record UserIdentity(long id, String role) { }
 }

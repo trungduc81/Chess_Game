@@ -7,7 +7,6 @@ import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Cursor;
 import javafx.scene.Node;
-import javafx.scene.Parent;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
@@ -165,27 +164,6 @@ public final class DialogOverlay {
         VBox card = baseCard(Tone.DEFAULT, "CHỌN QUÂN PHONG CẤP");
         card.getChildren().add(choices);
         StackPane backdrop = backdrop(owner, card);
-        display(owner, backdrop, card);
-    }
-
-    /** Hiển thị nội dung lớn như lịch sử, replay và bảng xếp hạng trong cùng cửa sổ. */
-    public static void content(Node owner, String title, Parent content, double preferredWidth) {
-        VBox card = baseCard(Tone.DEFAULT, title.toUpperCase());
-        card.getStyleClass().add("content-popup-card");
-        card.setPrefWidth(preferredWidth);
-        card.setMaxWidth(preferredWidth);
-        ScrollPane viewport = new ScrollPane(content);
-        viewport.getStyleClass().add("content-scroll");
-        viewport.setFitToWidth(true);
-        viewport.setPannable(true);
-        viewport.setPrefViewportHeight(310);
-        viewport.setMaxHeight(330);
-        VBox.setVgrow(viewport, Priority.ALWAYS);
-        card.getChildren().add(viewport);
-
-        StackPane backdrop = backdrop(owner, card);
-        HBox buttons = actionBar(backdrop, Action.secondary("Đóng", () -> { }));
-        card.getChildren().add(buttons);
         display(owner, backdrop, card);
     }
 

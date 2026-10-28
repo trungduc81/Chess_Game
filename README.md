@@ -15,6 +15,9 @@ Dự án Java Maven triển khai hệ thống cờ vua trực tuyến theo mô h
 - Lưu kết quả, nguyên nhân kết thúc, điểm ván 1/0.5/0, toàn bộ nước đi và FEN vào MySQL trong transaction.
 - Tính ELO với K=32; lưu ELO trước/sau và mức thay đổi. `game_uid` duy nhất chống cập nhật kết quả lặp.
 - Xem lịch sử, replay với các nút về đầu/lùi/tiến/tới cuối và bảng xếp hạng theo bốn tiêu chí của đề bài.
+- Phân quyền `PLAYER`/`ADMIN`. Tài khoản Admin có dashboard thống kê, quản lý người chơi,
+  khóa/mở khóa hoặc ngắt kết nối tài khoản, xem toàn bộ trận đấu và replay bằng cùng giao diện của người chơi.
+- Mọi thao tác quản trị được xác thực tại TCP Server và ghi vào `admin_audit_logs`; Client không được tự quyết định quyền.
 
 ## Cấu trúc source code
 
@@ -59,9 +62,20 @@ CHESS_SERVER_PORT=5555
 CHESS_DB_URL=jdbc:mysql://localhost:3306/btl_chess?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Ho_Chi_Minh
 CHESS_DB_USER=root
 CHESS_DB_PASSWORD=your_mysql_password
+
+# Chỉ cấu hình trên máy Server; để trống nếu chưa cần tạo Admin.
+CHESS_ADMIN_USERNAME=admin
+CHESS_ADMIN_PASSWORD=your_strong_admin_password
 ```
 
 Host và port không xuất hiện trên giao diện đăng nhập. Khi chạy client ở máy khác, sửa `CHESS_SERVER_HOST` trong `.env` thành IPv4 của máy Server. Server tự tạo bảng khi khởi động; cũng có thể chạy `database/schema.sql` bằng MySQL Workbench.
+
+`CHESS_ADMIN_USERNAME` và `CHESS_ADMIN_PASSWORD` chỉ được đặt trong `.env` của máy chạy Server,
+không đặt trong `.env` được gửi cho các máy Client và không commit mật khẩu thật lên GitHub.
+Khi cả hai giá trị hợp lệ, Server tạo hoặc cập nhật tài khoản tương ứng thành `ADMIN`, băm mật khẩu
+bằng cùng cơ chế PBKDF2 của tài khoản thường và kích hoạt lại tài khoản. Admin đăng nhập tại màn hình
+đăng nhập chung; Server trả `role=ADMIN` để Client chuyển tới Dashboard quản trị. Form đăng ký công khai
+chỉ tạo tài khoản `PLAYER`.
 
 ## Biên dịch và kiểm thử
 

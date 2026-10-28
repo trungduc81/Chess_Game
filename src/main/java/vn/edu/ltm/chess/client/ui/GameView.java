@@ -51,7 +51,7 @@ public final class GameView {
     private boolean terminalPopupOpen;
     private boolean deferClosedStatus;
     private int renderedMoveCount;
-    private boolean timeWarningPlayed;
+    private long lastWarningSecond = 6;
     private boolean resultSoundPlayed;
 
     public GameView(String username, JsonNode initialState, Consumer<NetworkMessage> sender,
@@ -203,7 +203,8 @@ public final class GameView {
         moveTable.setItems(FXCollections.observableArrayList(rows));
         if (!rows.isEmpty()) moveTable.scrollTo(rows.size() - 1);
         if (!Objects.equals(previousTurn, currentTurn)) {
-            timeWarningPlayed = false;
+            lastWarningSecond = 6;
+            SoundManager.stop(SoundManager.Effect.LOW_TIME);
         }
         updateClock();
     }
@@ -211,7 +212,7 @@ public final class GameView {
     public void addChatMessage(JsonNode data) {
         chatList.getItems().add(data.path("from").asText() + ": " + data.path("message").asText());
         if (!username.equals(data.path("from").asText())) {
-            SoundManager.play(SoundManager.Effect.CHAT);
+            SoundManager.play(SoundManager.Effect.NOTIFY);
         }
     }
 
@@ -224,7 +225,7 @@ public final class GameView {
     }
 
     public void handleDrawOffer(JsonNode data) {
-        SoundManager.play(SoundManager.Effect.DRAW_OFFER);
+        SoundManager.play(SoundManager.Effect.NOTIFY);
         DialogOverlay.confirm(root, DialogOverlay.Tone.DRAW,
                 DialogOverlay.unicodeIcon("🤝"), "ĐỀ NGHỊ HÒA",
                 data.path("from").asText() + " đề nghị kết thúc ván đấu với kết quả hòa.",
@@ -296,7 +297,10 @@ public final class GameView {
     public boolean terminalPopupOpen() { return terminalPopupOpen; }
     public boolean shouldDeferClosedStatus() { return deferClosedStatus; }
 
-    public void stop() { timer.stop(); }
+    public void stop() {
+        timer.stop();
+        SoundManager.stop(SoundManager.Effect.LOW_TIME);
+    }
 
     private void squareClicked(String square) {
         if (selectedSquare == null) {
@@ -311,7 +315,10 @@ public final class GameView {
             selectPiece(square);
             return;
         }
-        if (!legalDestinations.contains(square)) return;
+        if (!legalDestinations.contains(square)) {
+            SoundManager.play(SoundManager.Effect.ILLEGAL);
+            return;
+        }
 
         ObjectNode move = JsonProtocol.object().put("from", selectedSquare).put("to", square);
         char piece = boardView.pieceAt(selectedSquare);
@@ -329,6 +336,7 @@ public final class GameView {
     private void selectPiece(String square) {
         if (!Objects.equals(currentTurn, myColor) || !isMyPiece(boardView.pieceAt(square))) {
             clearSelection();
+            SoundManager.play(SoundManager.Effect.ILLEGAL);
             return;
         }
         selectedSquare = square;
@@ -389,9 +397,9 @@ public final class GameView {
         long totalSeconds = (remain + 999) / 1000;
         String activeTime = String.format("%02d:%02d", totalSeconds / 60, totalSeconds % 60);
         boolean myTurn = Objects.equals(currentTurn, myColor);
-        if (myTurn && remain > 0 && remain <= 5_000 && !timeWarningPlayed) {
-            SoundManager.play(SoundManager.Effect.TIME_WARNING);
-            timeWarningPlayed = true;
+        if (myTurn && totalSeconds > 0 && totalSeconds <= 5 && totalSeconds < lastWarningSecond) {
+            SoundManager.play(SoundManager.Effect.LOW_TIME);
+            lastWarningSecond = totalSeconds;
         }
         myTimerLabel.setText(myTurn ? activeTime : "00:30");
         opponentTimerLabel.setText(myTurn ? "00:30" : activeTime);
@@ -422,18 +430,8 @@ public final class GameView {
             return;
         }
         String notation = notationOf(moves.get(moves.size() - 1));
-        SoundManager.Effect effect;
-        if (notation.endsWith("+") || notation.endsWith("#")) {
-            effect = SoundManager.Effect.CHECK;
-        } else if (notation.startsWith("O-O") || notation.contains("=")) {
-            effect = SoundManager.Effect.SPECIAL_MOVE;
-        } else if (notation.contains("x")) {
-            effect = SoundManager.Effect.CAPTURE;
-        } else {
-            effect = SoundManager.Effect.MOVE;
-        }
         renderedMoveCount = moves.size();
-        SoundManager.play(effect);
+        SoundManager.play(SoundManager.moveEffect(notation));
     }
 
     private static void setClockActive(Label clock, boolean active) {
