@@ -18,11 +18,12 @@ public final class NetworkClient implements AutoCloseable {
     private final LimitedLineReader reader;
     private final BufferedWriter writer;
     private final AtomicBoolean closed = new AtomicBoolean();
-    private volatile Consumer<NetworkMessage> listener = message -> { };
+    private final Consumer<NetworkMessage> listener;
     private volatile String sessionToken;
     private volatile String gameId;
 
-    public NetworkClient(String host, int port) throws IOException {
+    public NetworkClient(String host, int port, Consumer<NetworkMessage> listener) throws IOException {
+        this.listener = listener;
         try {
             socket.connect(new InetSocketAddress(host, port), 5_000);
         } catch (IOException exception) {
@@ -36,8 +37,6 @@ public final class NetworkClient implements AutoCloseable {
         writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
         Thread.ofVirtual().name("chess-client-reader").start(this::readLoop);
     }
-
-    public void listener(Consumer<NetworkMessage> listener) { this.listener = listener; }
 
     public synchronized void send(NetworkMessage message) {
         if (closed.get()) throw new IllegalStateException("Kết nối đã đóng");

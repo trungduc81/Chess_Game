@@ -44,7 +44,7 @@ public final class ChessClientApp extends Application {
      * nguyên kích thước.
      */
     private Scene scene;
-    private NetworkClient network;
+    private final ClientNetworkService network = new ClientNetworkService(Platform::runLater, this::onMessage);
     private String username;
     private String role = "PLAYER";
     private int currentElo = 1200;
@@ -91,17 +91,11 @@ public final class ChessClientApp extends Application {
     }
 
     private void authenticate(boolean register, String user, String password) {
-        try {
-            if (network == null) {
-                network = new NetworkClient(config.serverHost(), config.serverPort());
-                network.listener(message -> Platform.runLater(() -> onMessage(message)));
-            }
-            JsonNode data = JsonProtocol.object().put("username", user.trim()).put("password", password);
-            send(NetworkMessage.of(register ? MessageType.REGISTER : MessageType.LOGIN, data));
-        } catch (Exception exception) {
-            loginView.showError("Không kết nối được tới máy chủ: " + exception.getMessage());
-            network = null;
-        }
+        LoginView submittingView = loginView;
+        JsonNode data = JsonProtocol.object().put("username", user.trim()).put("password", password);
+        network.authenticate(config.serverHost(), config.serverPort(),
+                NetworkMessage.of(register ? MessageType.REGISTER : MessageType.LOGIN, data),
+                error -> submittingView.showError("Không kết nối được tới máy chủ: " + error));
     }
 
     private void onMessage(NetworkMessage message) {
@@ -494,13 +488,7 @@ public final class ChessClientApp extends Application {
     }
 
     private void logout() {
-        if (network != null) {
-            try {
-                network.send(NetworkMessage.of(MessageType.LOGOUT, JsonProtocol.object()));
-                network.close();
-            } catch (Exception ignored) {
-            }
-        }
+        network.disconnect(true);
         clearSession();
         showLogin();
     }
@@ -508,6 +496,7 @@ public final class ChessClientApp extends Application {
     private void handleDisconnect(JsonNode data) {
         SoundManager.play(SoundManager.Effect.DISCONNECT);
         stopGameView();
+        network.disconnect(false);
         clearSession();
         showLogin();
         DialogOverlay.disconnected(loginView.root(), data.path("message").asText(), () -> {
@@ -515,7 +504,6 @@ public final class ChessClientApp extends Application {
     }
 
     private void clearSession() {
-        network = null;
         username = null;
         role = "PLAYER";
         currentElo = 1200;
@@ -530,7 +518,7 @@ public final class ChessClientApp extends Application {
     }
 
     private void send(NetworkMessage message) {
-        if (network == null) {
+        if (!network.isConnected()) {
             DialogOverlay.disconnected(popupOwner(), "Chưa kết nối tới máy chủ", this::showLogin);
             return;
         }
@@ -559,8 +547,7 @@ public final class ChessClientApp extends Application {
     public void stop() throws Exception {
         stopGameView();
         stopReplayView();
-        if (network != null)
-            network.close();
+        network.close();
         SoundManager.shutdown();
     }
 }

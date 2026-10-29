@@ -1,52 +1,43 @@
 package vn.edu.ltm.chess.server;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import vn.edu.ltm.chess.chess.*;
 import vn.edu.ltm.chess.protocol.*;
-import vn.edu.ltm.chess.repository.*;
-
-import java.io.IOException;
+import vn.edu.ltm.chess.repository.ChessRepository;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.sql.SQLException;
 import java.time.Duration;
-import java.util.*;
 import java.util.concurrent.*;
+import static vn.edu.ltm.chess.server.ServerMessages.*;
 
-/**
- * TCP server trung tâm: mọi trạng thái và quyết định nghiệp vụ đều được xác
- * nhận tại đây.
- */
+/** Một TCP server: quản lý vòng đời Socket và định tuyến message tới service. */
 public final class ChessServer implements AutoCloseable {
     private final int port;
     private final ChessRepository repository;
-    private final long moveTimeoutMillis;
     private final long heartbeatIntervalMillis;
-    private final long heartbeatTimeoutMillis;
     private final String bootstrapAdminUsername;
     private final String bootstrapAdminPassword;
     private final ExecutorService clientExecutor = Executors.newVirtualThreadPerTaskExecutor();
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
-    private final Object matchmakingLock = new Object();
-    private final ConcurrentMap<String, ClientConnection> online = new ConcurrentHashMap<>();
-    private final ConcurrentMap<String, PlayerStatus> statuses = new ConcurrentHashMap<>();
-    private final ConcurrentMap<String, Challenge> challenges = new ConcurrentHashMap<>();
-    private final ConcurrentMap<String, GameSession> playerGames = new ConcurrentHashMap<>();
+    private final GameService games;
+    private final AccountService accounts;
+    private final AdminService admin;
+    private final MatchQueryService queries;
     private volatile boolean running;
     private ServerSocket serverSocket;
 
     public ChessServer(int port, ChessRepository repository, Duration moveTimeout,
-            Duration heartbeatInterval, Duration heartbeatTimeout,
-            String bootstrapAdminUsername, String bootstrapAdminPassword) {
+                       Duration heartbeatInterval, Duration heartbeatTimeout,
+                       String bootstrapAdminUsername, String bootstrapAdminPassword) {
         this.port = port;
         this.repository = repository;
-        this.moveTimeoutMillis = moveTimeout.toMillis();
         this.heartbeatIntervalMillis = heartbeatInterval.toMillis();
-        this.heartbeatTimeoutMillis = heartbeatTimeout.toMillis();
         this.bootstrapAdminUsername = bootstrapAdminUsername == null ? "" : bootstrapAdminUsername;
         this.bootstrapAdminPassword = bootstrapAdminPassword == null ? "" : bootstrapAdminPassword;
+        ServerState state = new ServerState();
+        ServerMessages messages = new ServerMessages(state, repository);
+        games = new GameService(state, repository, messages, clientExecutor, moveTimeout.toMillis());
+        accounts = new AccountService(state, repository, messages, games, clientExecutor, heartbeatTimeout.toMillis());
+        admin = new AdminService(state, repository, accounts);
+        queries = new MatchQueryService(repository);
     }
 
     public void start() throws Exception {
@@ -54,8 +45,8 @@ public final class ChessServer implements AutoCloseable {
         repository.bootstrapAdmin(bootstrapAdminUsername, bootstrapAdminPassword);
         serverSocket = new ServerSocket(port);
         running = true;
-        scheduler.scheduleAtFixedRate(this::checkTimeouts, 200, 200, TimeUnit.MILLISECONDS);
-        scheduler.scheduleAtFixedRate(this::heartbeat, heartbeatIntervalMillis,
+        scheduler.scheduleAtFixedRate(games::checkTimeouts, 200, 200, TimeUnit.MILLISECONDS);
+        scheduler.scheduleAtFixedRate(accounts::heartbeat, heartbeatIntervalMillis,
                 heartbeatIntervalMillis, TimeUnit.MILLISECONDS);
         System.out.println("Chess server đang chạy tại 0.0.0.0:" + port);
         while (running) {
@@ -76,16 +67,16 @@ public final class ChessServer implements AutoCloseable {
                 return;
             }
             if (message.type() == MessageType.REGISTER) {
-                register(client, message);
+                accounts.register(client, message);
                 return;
             }
             if (message.type() == MessageType.LOGIN) {
-                login(client, message);
+                accounts.login(client, message);
                 return;
             }
-            if (!authenticated(client, message))
+            if (!accounts.authenticated(client, message))
                 return;
-            if ("ADMIN".equals(client.role()) && !adminMessage(message.type())
+            if ("ADMIN".equals(client.role()) && !AdminService.adminMessage(message.type())
                     && message.type() != MessageType.LOGOUT
                     && message.type() != MessageType.MATCH_DETAIL_REQUEST) {
                 error(client, message, "Tài khoản quản trị không tham gia chức năng thi đấu");
@@ -93,29 +84,26 @@ public final class ChessServer implements AutoCloseable {
             }
 
             switch (message.type()) {
-                case LOGOUT -> logout(client);
-                case CHALLENGE_SEND -> challenge(client, message);
-                case CHALLENGE_RESPONSE -> challengeResponse(client, message);
-                case LEGAL_MOVES_REQUEST -> legalMoves(client, message);
-                case MOVE -> move(client, message);
-                case CHAT_SEND -> chat(client, message);
-                case DRAW_OFFER -> drawOffer(client, message);
-                case DRAW_RESPONSE -> drawResponse(client, message);
-                case RESIGN -> resign(client, message);
-                case EXIT_GAME -> exitGame(client, message);
-                case REMATCH_RESPONSE -> rematch(client, message);
-                case HISTORY_REQUEST -> client.send(NetworkMessage.reply(MessageType.HISTORY_RESPONSE,
-                        message.requestId(), JsonProtocol.value(repository.history(client.username()))));
-                case MATCH_DETAIL_REQUEST -> matchDetail(client, message);
-                case RANKING_REQUEST -> client.send(NetworkMessage.reply(MessageType.RANKING_RESPONSE,
-                        message.requestId(), JsonProtocol.value(repository.ranking(
-                                rankingSorts(message.data())))));
-                case ADMIN_DASHBOARD_REQUEST -> adminDashboard(client, message);
-                case ADMIN_USERS_REQUEST -> adminUsers(client, message);
-                case ADMIN_LOCK_USER -> adminAccountStatus(client, message, true);
-                case ADMIN_UNLOCK_USER -> adminAccountStatus(client, message, false);
-                case ADMIN_KICK_USER -> adminKickUser(client, message);
-                case ADMIN_MATCHES_REQUEST -> adminMatches(client, message);
+                case LOGOUT -> accounts.logout(client);
+                case CHALLENGE_SEND -> games.challenge(client, message);
+                case CHALLENGE_RESPONSE -> games.challengeResponse(client, message);
+                case LEGAL_MOVES_REQUEST -> games.legalMoves(client, message);
+                case MOVE -> games.move(client, message);
+                case CHAT_SEND -> games.chat(client, message);
+                case DRAW_OFFER -> games.drawOffer(client, message);
+                case DRAW_RESPONSE -> games.drawResponse(client, message);
+                case RESIGN -> games.resign(client, message);
+                case EXIT_GAME -> games.exitGame(client, message);
+                case REMATCH_RESPONSE -> games.rematch(client, message);
+                case HISTORY_REQUEST -> queries.history(client, message);
+                case MATCH_DETAIL_REQUEST -> queries.matchDetail(client, message);
+                case RANKING_REQUEST -> queries.ranking(client, message);
+                case ADMIN_DASHBOARD_REQUEST -> admin.adminDashboard(client, message);
+                case ADMIN_USERS_REQUEST -> admin.adminUsers(client, message);
+                case ADMIN_LOCK_USER -> admin.adminAccountStatus(client, message, true);
+                case ADMIN_UNLOCK_USER -> admin.adminAccountStatus(client, message, false);
+                case ADMIN_KICK_USER -> admin.adminKickUser(client, message);
+                case ADMIN_MATCHES_REQUEST -> admin.adminMatches(client, message);
                 default -> error(client, message, "Loại thông điệp không hợp lệ trong trạng thái hiện tại");
             }
         } catch (Exception exception) {
@@ -124,708 +112,8 @@ public final class ChessServer implements AutoCloseable {
         }
     }
 
-    private boolean authenticated(ClientConnection client, NetworkMessage message) {
-        if (client.username() == null) {
-            error(client, message, "Bạn phải đăng nhập trước");
-            return false;
-        }
-        if (message.sessionToken() == null || !message.sessionToken().equals(client.sessionToken())) {
-            error(client, message, "Phiên đăng nhập không hợp lệ");
-            return false;
-        }
-        return true;
-    }
-
-    private void register(ClientConnection client, NetworkMessage message) throws SQLException {
-        if (client.username() != null) {
-            error(client, message, "Hãy đăng xuất trước khi đăng ký tài khoản khác");
-            return;
-        }
-        String username = text(message.data(), "username").trim();
-        String password = text(message.data(), "password");
-        if (!username.matches("[A-Za-z0-9_]{3,40}") || password.length() < 6) {
-            error(client, message, "Tên đăng nhập gồm 3-40 ký tự chữ/số/_ và mật khẩu tối thiểu 6 ký tự");
-            return;
-        }
-        if (!repository.register(username, password)) {
-            error(client, message, "Tên đăng nhập đã tồn tại");
-            return;
-        }
-        success(client, message, "Đăng ký thành công, ELO khởi tạo là 1200");
-    }
-
-    private void login(ClientConnection client, NetworkMessage message) throws SQLException {
-        if (client.username() != null) {
-            error(client, message, "Kết nối này đã đăng nhập");
-            return;
-        }
-        String username = text(message.data(), "username").trim();
-        Optional<UserAccount> account = repository.authenticate(username, text(message.data(), "password"));
-        if (account.isEmpty()) {
-            error(client, message, "Sai tên đăng nhập hoặc mật khẩu");
-            return;
-        }
-        if ("LOCKED".equalsIgnoreCase(account.get().accountStatus())) {
-            String reason = account.get().lockedReason();
-            error(client, message, reason == null || reason.isBlank()
-                    ? "Tài khoản đã bị khóa"
-                    : "Tài khoản đã bị khóa: " + reason);
-            return;
-        }
-        String token;
-        boolean duplicateLogin;
-        synchronized (matchmakingLock) {
-            duplicateLogin = online.containsKey(username);
-            if (duplicateLogin) {
-                token = null;
-            } else {
-                token = UUID.randomUUID().toString();
-                client.username(username);
-                client.role(account.get().role());
-                client.sessionToken(token);
-                online.put(username, client);
-                if ("PLAYER".equals(account.get().role())) statuses.put(username, PlayerStatus.FREE);
-            }
-        }
-        if (duplicateLogin) {
-            error(client, message, "Tài khoản đang đăng nhập ở máy khác");
-            return;
-        }
-        ObjectNode data = JsonProtocol.object().put("username", username)
-                .put("elo", account.get().elo()).put("role", account.get().role())
-                .put("accountStatus", account.get().accountStatus()).put("sessionToken", token);
-        client.send(new NetworkMessage(MessageType.LOGIN_SUCCESS, message.requestId(), token, null, data));
-        broadcastOnlineList();
-    }
-
-    private void logout(ClientConnection client) {
-        disconnected(client);
-        try {
-            client.close();
-        } catch (IOException ignored) {
-        }
-    }
-
-    private void challenge(ClientConnection client, NetworkMessage message) throws SQLException {
-        String from = client.username();
-        String target = text(message.data(), "target");
-        int challengerElo = repository.elo(from);
-        Challenge pending = null;
-        ClientConnection targetConnection = null;
-        String rejection = null;
-        synchronized (matchmakingLock) {
-            if (from.equals(target) || !online.containsKey(target)) {
-                rejection = "Đối thủ không online";
-            } else if (statuses.get(from) != PlayerStatus.FREE
-                    || statuses.get(target) != PlayerStatus.FREE
-                    || playerGames.containsKey(from) || playerGames.containsKey(target)) {
-                rejection = "Một trong hai người chơi đang bận";
-            } else {
-                boolean alreadyPending = challenges.values().stream()
-                        .anyMatch(c -> c.challenger().equals(from) || c.challenged().equals(from)
-                                || c.challenger().equals(target) || c.challenged().equals(target));
-                if (alreadyPending) {
-                    rejection = "Một người chơi đang có lời thách đấu chờ xử lý";
-                } else {
-                    pending = new Challenge(UUID.randomUUID().toString(), from, target,
-                            System.currentTimeMillis());
-                    challenges.put(pending.id(), pending);
-                    targetConnection = online.get(target);
-                }
-            }
-        }
-        if (rejection != null) {
-            error(client, message, rejection);
-            return;
-        }
-        targetConnection.send(NetworkMessage.of(MessageType.CHALLENGE_RECEIVED,
-                JsonProtocol.object().put("challengeId", pending.id()).put("challenger", from)
-                        .put("challengerElo", challengerElo)));
-        success(client, message, "Đã gửi lời thách đấu đến " + target);
-    }
-
-    private void challengeResponse(ClientConnection client, NetworkMessage message) {
-        String id = text(message.data(), "challengeId");
-        boolean accept = message.data().path("accept").asBoolean(false);
-        Challenge challenge;
-        ClientConnection challenger = null;
-        GameSession game = null;
-        String rejection = null;
-        synchronized (matchmakingLock) {
-            challenge = challenges.get(id);
-            if (challenge == null || !challenge.challenged().equals(client.username())) {
-                rejection = "Lời thách đấu không còn hiệu lực";
-            } else {
-                challenger = online.get(challenge.challenger());
-                if (!accept || challenger == null) {
-                    challenges.remove(id, challenge);
-                } else if (statuses.get(challenge.challenger()) != PlayerStatus.FREE
-                        || statuses.get(challenge.challenged()) != PlayerStatus.FREE
-                        || playerGames.containsKey(challenge.challenger())
-                        || playerGames.containsKey(challenge.challenged())) {
-                    challenges.remove(id, challenge);
-                    rejection = "Một người chơi không còn rảnh";
-                } else {
-                    challenges.remove(id, challenge);
-                    game = createGameLocked(challenge.challenged(), challenge.challenger());
-                }
-            }
-        }
-        if (rejection != null) {
-            error(client, message, rejection);
-            return;
-        }
-        if (!accept || challenger == null) {
-            if (challenger != null)
-                challenger.send(NetworkMessage.of(MessageType.CHALLENGE_RESULT,
-                        JsonProtocol.object().put("accepted", false).put("opponent", client.username())
-                                .put("message", client.username() + " đã từ chối lời thách đấu")));
-            return;
-        }
-        announceGame(game);
-    }
-
-    private GameSession createGameLocked(String white, String black) {
-        GameSession game = new GameSession(white, black, moveTimeoutMillis);
-        playerGames.put(white, game);
-        playerGames.put(black, game);
-        statuses.put(white, PlayerStatus.BUSY);
-        statuses.put(black, PlayerStatus.BUSY);
-        return game;
-    }
-
-    private void announceGame(GameSession game) {
-        sendGameStarted(game, game.white());
-        sendGameStarted(game, game.black());
-        broadcastOnlineList();
-    }
-
-    private void sendGameStarted(GameSession game, String player) {
-        ClientConnection connection = online.get(player);
-        if (connection == null)
-            return;
-        ObjectNode data = gameState(game);
-        data.put("yourColor", game.colorOf(player).name());
-        data.put("white", game.white()).put("black", game.black());
-        connection.send(new NetworkMessage(MessageType.GAME_STARTED, UUID.randomUUID().toString(),
-                connection.sessionToken(), game.id(), data));
-    }
-
-    private void move(ClientConnection client, NetworkMessage message) {
-        GameSession game = activeGame(client, message);
-        if (game == null)
-            return;
-        String promotionText = message.data().path("promotion").asText("");
-        Character promotion = promotionText.isBlank() ? null : promotionText.charAt(0);
-        Move move = new Move(text(message.data(), "from"), text(message.data(), "to"), promotion);
-        GameSession.TurnResult result = game.move(client.username(), move);
-        if (result.timedOutPlayer() != null) {
-            client.send(NetworkMessage.reply(MessageType.MOVE_REJECTED, message.requestId(),
-                    JsonProtocol.object().put("message", "Nước đi đến sau thời hạn")));
-            finishClaimed(game, winnerWhenLoses(game, result.timedOutPlayer()),
-                    result.timedOutPlayer() + " hết 30 giây");
-            return;
-        }
-        if (!result.accepted()) {
-            ObjectNode data = JsonProtocol.object().put("message", result.error());
-            if (result.moveResult() != null)
-                data.put("fen", result.moveResult().fen());
-            client.send(NetworkMessage.reply(MessageType.MOVE_REJECTED, message.requestId(), data));
-            return;
-        }
-        sendBoth(game, MessageType.GAME_STATE, gameState(game));
-        if (result.finished()) {
-            finishClaimed(game, result.moveResult().outcome().name(), result.moveResult().reason());
-        }
-    }
-
-    private void legalMoves(ClientConnection client, NetworkMessage message) {
-        GameSession game = activeGame(client, message);
-        if (game == null)
-            return;
-        String from = text(message.data(), "from").trim().toLowerCase(Locale.ROOT);
-        ObjectNode data = JsonProtocol.object().put("from", from);
-        ArrayNode destinations = data.putArray("destinations");
-        game.legalDestinations(client.username(), from).forEach(destinations::add);
-        client.send(NetworkMessage.reply(MessageType.LEGAL_MOVES_RESPONSE,
-                message.requestId(), data));
-    }
-
-    private void chat(ClientConnection client, NetworkMessage message) {
-        GameSession game = activeGame(client, message);
-        if (game == null || game.phase() != GameSession.Phase.PLAYING)
-            return;
-        String content = text(message.data(), "message").trim();
-        if (content.isBlank() || content.length() > 300) {
-            error(client, message, "Tin nhắn phải có 1-300 ký tự");
-            return;
-        }
-        sendBoth(game, MessageType.CHAT_RECEIVED, JsonProtocol.object()
-                .put("from", client.username()).put("message", content).put("sentAt", System.currentTimeMillis()));
-    }
-
-    private void drawOffer(ClientConnection client, NetworkMessage message) {
-        GameSession game = activeGame(client, message);
-        if (game == null)
-            return;
-        if (!game.offerDraw(client.username())) {
-            error(client, message, "Không thể gửi yêu cầu hòa lúc này");
-            return;
-        }
-        ClientConnection opponent = online.get(game.opponentOf(client.username()));
-        if (opponent != null) {
-            opponent.send(NetworkMessage.of(MessageType.DRAW_RECEIVED,
-                    JsonProtocol.object().put("from", client.username())));
-            success(client, message, "Đã gửi đề nghị hòa đến " + opponent.username());
-        }
-    }
-
-    private void drawResponse(ClientConnection client, NetworkMessage message) {
-        GameSession game = activeGame(client, message);
-        if (game == null)
-            return;
-        boolean accept = message.data().path("accept").asBoolean(false);
-        synchronized (game) {
-            if (!game.canAnswerDraw(client.username())) {
-                error(client, message, "Không có yêu cầu hòa hợp lệ");
-                return;
-            }
-            game.clearDrawOffer();
-            if (accept && !game.claimFinish())
-                return;
-        }
-        if (accept)
-            finishClaimed(game, "DRAW", "Hai bên đồng ý hòa");
-        else {
-            ClientConnection opponent = online.get(game.opponentOf(client.username()));
-            if (opponent != null)
-                opponent.send(NetworkMessage.of(MessageType.DRAW_RESULT,
-                        JsonProtocol.object().put("accepted", false)
-                                .put("message", client.username() + " đã từ chối hòa")));
-        }
-    }
-
-    private void resign(ClientConnection client, NetworkMessage message) {
-        GameSession game = activeGame(client, message);
-        if (game != null && game.claimFinish()) {
-            finishClaimed(game, winnerWhenLoses(game, client.username()), client.username() + " đầu hàng");
-        }
-    }
-
-    private void exitGame(ClientConnection client, NetworkMessage message) {
-        GameSession game = activeGame(client, message);
-        if (game == null)
-            return;
-        if (game.claimFinish()) {
-            finishClaimed(game, winnerWhenLoses(game, client.username()),
-                    client.username() + " thoát trận", false);
-        }
-        game.voteRematch(client.username(), false);
-        closeGame(game, client.username() + " không tiếp tục");
-    }
-
-    private void rematch(ClientConnection client, NetworkMessage message) {
-        GameSession game = playerGames.get(client.username());
-        if (game == null) {
-            client.send(NetworkMessage.reply(MessageType.REMATCH_STATUS, message.requestId(),
-                    JsonProtocol.object().put("closed", true)
-                            .put("message", "Phiên đấu đã kết thúc")));
-            return;
-        }
-        if (message.gameId() == null || !message.gameId().equals(game.id())) {
-            error(client, message, "Mã phiên đấu không hợp lệ hoặc đã hết hạn");
-            return;
-        }
-        if (!game.voteRematch(client.username(),
-                message.data().path("accept").asBoolean(false))) {
-            error(client, message, "Không thể trả lời tái đấu lúc này");
-            return;
-        }
-        Boolean decision = game.rematchDecision();
-        if (decision == null) {
-            ClientConnection opponent = online.get(game.opponentOf(client.username()));
-            if (opponent != null)
-                opponent.send(NetworkMessage.of(MessageType.REMATCH_STATUS,
-                        JsonProtocol.object().put("message", client.username() + " đã đồng ý tái đấu")));
-        } else if (!decision) {
-            closeGame(game, "Một người chơi không tiếp tục");
-        } else {
-            GameSession rematch = null;
-            synchronized (matchmakingLock) {
-                if (playerGames.get(game.white()) == game && playerGames.get(game.black()) == game
-                        && online.containsKey(game.white()) && online.containsKey(game.black())) {
-                    game.close();
-                    rematch = createGameLocked(game.black(), game.white());
-                }
-            }
-            if (rematch == null) {
-                closeGame(game, "Không thể bắt đầu tái đấu vì một người chơi đã rời phòng");
-            } else {
-                announceGame(rematch);
-            }
-        }
-    }
-
-    private void matchDetail(ClientConnection client, NetworkMessage message) throws SQLException {
-        long matchId = message.data().path("matchId").asLong(-1);
-        if (matchId < 1) {
-            error(client, message, "Mã trận không hợp lệ");
-            return;
-        }
-        boolean admin = "ADMIN".equals(client.role());
-        List<StoredMove> moves = admin
-                ? repository.adminMatchMoves(matchId)
-                : repository.matchMoves(matchId, client.username());
-        ObjectNode detail = JsonProtocol.object()
-                .put("pgn", admin
-                        ? repository.adminMatchPgn(matchId, moves)
-                        : repository.matchPgn(matchId, client.username(), moves));
-        detail.set("moves", JsonProtocol.value(moves));
-        client.send(NetworkMessage.reply(MessageType.MATCH_DETAIL_RESPONSE, message.requestId(), detail));
-    }
-
-    private void adminDashboard(ClientConnection client, NetworkMessage message) throws SQLException {
-        if (!authenticatedAdmin(client, message)) return;
-        AdminDashboardStats stats = repository.adminDashboardStats();
-        long onlineUsers = online.values().stream()
-                .filter(connection -> "PLAYER".equals(connection.role())).count();
-        int activeGames = new HashSet<>(playerGames.values()).size();
-        ObjectNode data = JsonProtocol.object()
-                .put("totalUsers", stats.totalUsers())
-                .put("onlineUsers", onlineUsers)
-                .put("activeGames", activeGames)
-                .put("totalMatches", stats.totalMatches());
-        client.send(NetworkMessage.reply(MessageType.ADMIN_DASHBOARD_RESPONSE,
-                message.requestId(), data));
-    }
-
-    private void adminUsers(ClientConnection client, NetworkMessage message) throws SQLException {
-        if (!authenticatedAdmin(client, message)) return;
-        ArrayNode rows = JsonProtocol.MAPPER.createArrayNode();
-        for (AdminUserRow user : repository.adminUsers()) {
-            ClientConnection active = online.get(user.username());
-            boolean isOnline = active != null;
-            String onlineStatus = !isOnline ? "OFFLINE"
-                    : "PLAYER".equals(user.role())
-                            ? statuses.getOrDefault(user.username(), PlayerStatus.FREE).name()
-                            : "ONLINE";
-            ObjectNode row = JsonProtocol.object()
-                    .put("id", user.id()).put("username", user.username())
-                    .put("elo", user.elo()).put("totalMatches", user.totalMatches())
-                    .put("online", isOnline).put("onlineStatus", onlineStatus)
-                    .put("playerStatus", onlineStatus)
-                    .put("accountStatus", user.accountStatus()).put("role", user.role())
-                    .put("createdAt", user.createdAt());
-            if (user.lockedReason() == null) row.putNull("lockedReason");
-            else row.put("lockedReason", user.lockedReason());
-            rows.add(row);
-        }
-        client.send(NetworkMessage.reply(MessageType.ADMIN_USERS_RESPONSE,
-                message.requestId(), rows));
-    }
-
-    private void adminAccountStatus(ClientConnection client, NetworkMessage message,
-                                    boolean lock) throws SQLException {
-        if (!authenticatedAdmin(client, message)) return;
-        String targetUsername = text(message.data(), "username").trim();
-        String reason = text(message.data(), "reason").trim();
-        if (targetUsername.isBlank()) {
-            error(client, message, "Thiếu tên tài khoản cần xử lý");
-            return;
-        }
-        String status = lock ? "LOCKED" : "ACTIVE";
-        String action = lock ? "LOCK_USER" : "UNLOCK_USER";
-        if (!repository.setAccountStatus(client.username(), targetUsername, status,
-                lock ? reason : null, action)) {
-            error(client, message, "Không thể xử lý tài khoản này; tài khoản Admin được bảo vệ");
-            return;
-        }
-        ObjectNode result = JsonProtocol.object().put("success", true)
-                .put("username", targetUsername).put("accountStatus", status)
-                .put("message", lock ? "Đã khóa tài khoản " + targetUsername
-                        : "Đã mở khóa tài khoản " + targetUsername);
-        client.send(NetworkMessage.reply(MessageType.ADMIN_ACTION_RESULT,
-                message.requestId(), result));
-        if (lock) disconnectByAdmin(targetUsername);
-    }
-
-    private void adminKickUser(ClientConnection client, NetworkMessage message) throws SQLException {
-        if (!authenticatedAdmin(client, message)) return;
-        String targetUsername = text(message.data(), "username").trim();
-        ClientConnection target = online.get(targetUsername);
-        if (target == null || !"PLAYER".equals(target.role())
-                || !repository.logAdminAction(client.username(), targetUsername,
-                        "KICK_USER", "Ngắt kết nối bởi quản trị viên")) {
-            error(client, message, "Người chơi không online hoặc không thể bị ngắt kết nối");
-            return;
-        }
-        client.send(NetworkMessage.reply(MessageType.ADMIN_ACTION_RESULT, message.requestId(),
-                JsonProtocol.object().put("success", true).put("username", targetUsername)
-                        .put("message", "Đã ngắt kết nối " + targetUsername)));
-        disconnectByAdmin(targetUsername);
-    }
-
-    private void adminMatches(ClientConnection client, NetworkMessage message) throws SQLException {
-        if (!authenticatedAdmin(client, message)) return;
-        client.send(NetworkMessage.reply(MessageType.ADMIN_MATCHES_RESPONSE,
-                message.requestId(), JsonProtocol.value(repository.adminMatches(matchSorts(message.data())))));
-    }
-
-    private boolean authenticatedAdmin(ClientConnection client, NetworkMessage message) {
-        if (!"ADMIN".equals(client.role())) {
-            error(client, message, "Bạn không có quyền quản trị hệ thống");
-            return false;
-        }
-        return true;
-    }
-
-    private void disconnectByAdmin(String username) {
-        ClientConnection target = online.get(username);
-        if (target == null) return;
-        try {
-            target.close();
-        } catch (IOException ignored) {
-        }
-        disconnected(target);
-    }
-
-    private void finishClaimed(GameSession game, String result, String reason) {
-        finishClaimed(game, result, reason, true);
-    }
-
-    private void finishClaimed(GameSession game, String result, String reason, boolean rematchAllowed) {
-        if (!game.beginPersistence())
-            return;
-        SavedMatch saved = null;
-        String persistenceError = null;
-        try {
-            saved = repository.saveMatch(game.id(), game.white(), game.black(), result, reason,
-                    game.startedAt(), System.currentTimeMillis(), game.moves());
-        } catch (SQLException exception) {
-            persistenceError = safeMessage(exception);
-            exception.printStackTrace();
-        }
-        game.finish();
-        ObjectNode data = JsonProtocol.object().put("gameId", game.id()).put("result", result)
-                .put("reason", reason).put("rematchAllowed", rematchAllowed)
-                .put("matchId", saved == null ? -1 : saved.matchId());
-        if (saved != null) {
-            data.put("whiteEloBefore", saved.whiteEloBefore()).put("whiteEloAfter", saved.whiteEloAfter())
-                    .put("whiteEloDelta", saved.whiteEloDelta()).put("blackEloBefore", saved.blackEloBefore())
-                    .put("blackEloAfter", saved.blackEloAfter()).put("blackEloDelta", saved.blackEloDelta());
-        }
-        if (persistenceError != null)
-            data.put("persistenceWarning", persistenceError);
-        sendBoth(game, MessageType.GAME_OVER, data);
-        broadcastOnlineList();
-    }
-
-    private void closeGame(GameSession game, String message) {
-        boolean removed;
-        synchronized (matchmakingLock) {
-            boolean whiteRemoved = playerGames.remove(game.white(), game);
-            boolean blackRemoved = playerGames.remove(game.black(), game);
-            removed = whiteRemoved || blackRemoved;
-            if (!removed)
-                return;
-            game.close();
-            if (online.containsKey(game.white()))
-                statuses.put(game.white(), PlayerStatus.FREE);
-            if (online.containsKey(game.black()))
-                statuses.put(game.black(), PlayerStatus.FREE);
-        }
-        sendBoth(game, MessageType.REMATCH_STATUS,
-                JsonProtocol.object().put("closed", true).put("message", message));
-        broadcastOnlineList();
-    }
-
-    private void checkTimeouts() {
-        try {
-            long now = System.currentTimeMillis();
-            for (GameSession game : new HashSet<>(playerGames.values())) {
-                String loser = game.claimTimeout(now);
-                if (loser != null) {
-                    String result = winnerWhenLoses(game, loser);
-                    clientExecutor.submit(() -> finishClaimed(game, result, loser + " hết 30 giây"));
-                }
-            }
-            List<ClientConnection> expiredChallengers = new ArrayList<>();
-            synchronized (matchmakingLock) {
-                for (Challenge challenge : new ArrayList<>(challenges.values())) {
-                    if (now - challenge.createdAt() <= 30_000)
-                        continue;
-                    if (!challenges.remove(challenge.id(), challenge))
-                        continue;
-                    ClientConnection challenger = online.get(challenge.challenger());
-                    if (challenger != null)
-                        expiredChallengers.add(challenger);
-                }
-            }
-            for (ClientConnection challenger : expiredChallengers) {
-                clientExecutor.submit(() -> challenger.send(NetworkMessage.of(MessageType.CHALLENGE_RESULT,
-                        JsonProtocol.object().put("accepted", false)
-                                .put("message", "Lời thách đấu đã hết hạn"))));
-            }
-        } catch (Exception exception) {
-            System.err.println("Lỗi kiểm tra timeout: " + safeMessage(exception));
-        }
-    }
-
-    private void heartbeat() {
-        long now = System.currentTimeMillis();
-        for (ClientConnection connection : List.copyOf(online.values())) {
-            clientExecutor.submit(() -> {
-                if (now - connection.lastSeenAt() > heartbeatTimeoutMillis) {
-                    System.err
-                            .println("Heartbeat timeout: " + connection.username() + " " + connection.remoteAddress());
-                    try {
-                        connection.close();
-                    } catch (IOException ignored) {
-                    }
-                } else {
-                    connection.send(NetworkMessage.of(MessageType.PING,
-                            JsonProtocol.object().put("serverTime", now)));
-                }
-            });
-        }
-    }
-
     public void disconnected(ClientConnection client) {
-        String username = client.username();
-        if (username == null)
-            return;
-        GameSession game;
-        synchronized (matchmakingLock) {
-            if (!online.remove(username, client))
-                return;
-            statuses.remove(username);
-            challenges.values().removeIf(c -> c.challenger().equals(username) || c.challenged().equals(username));
-            game = playerGames.get(username);
-        }
-        if (game != null) {
-            if (game.claimFinish()) {
-                finishClaimed(game, winnerWhenLoses(game, username), username + " mất kết nối", false);
-            }
-            closeGame(game, username + " đã mất kết nối");
-        }
-        broadcastOnlineList();
-    }
-
-    private GameSession activeGame(ClientConnection client, NetworkMessage message) {
-        GameSession game = playerGames.get(client.username());
-        if (game == null) {
-            error(client, message, "Bạn không ở trong ván đấu nào");
-            return null;
-        }
-        if (message.gameId() == null || !message.gameId().equals(game.id())) {
-            error(client, message, "Mã phiên đấu không hợp lệ hoặc đã hết hạn");
-            return null;
-        }
-        return game;
-    }
-
-    private ObjectNode gameState(GameSession game) {
-        GameSession.StateSnapshot snapshot = game.stateSnapshot();
-        ObjectNode data = JsonProtocol.object().put("gameId", game.id()).put("fen", snapshot.fen())
-                .put("turn", snapshot.turn().name()).put("deadlineEpochMs", snapshot.deadlineEpochMs())
-                .put("inCheck", snapshot.inCheck())
-                .put("remainingTurnTimeMs",
-                        Math.max(0, snapshot.deadlineEpochMs() - System.currentTimeMillis()));
-        data.set("moves", JsonProtocol.value(snapshot.moves()));
-        return data;
-    }
-
-    private void sendBoth(GameSession game, MessageType type, JsonNode data) {
-        ClientConnection white = online.get(game.white());
-        ClientConnection black = online.get(game.black());
-        if (white != null)
-            white.send(new NetworkMessage(type, UUID.randomUUID().toString(),
-                    white.sessionToken(), game.id(), data));
-        if (black != null)
-            black.send(new NetworkMessage(type, UUID.randomUUID().toString(),
-                    black.sessionToken(), game.id(), data));
-    }
-
-    private void broadcastOnlineList() {
-        ArrayNode list = JsonProtocol.MAPPER.createArrayNode();
-        online.entrySet().stream()
-                .filter(entry -> "PLAYER".equals(entry.getValue().role()))
-                .map(Map.Entry::getKey).sorted().forEach(username -> {
-            ObjectNode row = JsonProtocol.object().put("username", username)
-                    .put("status", statuses.getOrDefault(username, PlayerStatus.FREE).name());
-            try {
-                row.put("elo", repository.elo(username));
-            } catch (SQLException ignored) {
-                row.put("elo", 1200);
-            }
-            list.add(row);
-        });
-        NetworkMessage message = NetworkMessage.of(MessageType.ONLINE_LIST, list);
-        online.values().stream().filter(connection -> "PLAYER".equals(connection.role()))
-                .forEach(connection -> connection.send(message));
-    }
-
-    private static String winnerWhenLoses(GameSession game, String loser) {
-        return loser.equals(game.white()) ? "BLACK_WIN" : "WHITE_WIN";
-    }
-
-    private static String text(JsonNode data, String field) {
-        return data.path(field).asText("");
-    }
-
-    private static boolean adminMessage(MessageType type) {
-        return switch (type) {
-            case ADMIN_DASHBOARD_REQUEST, ADMIN_USERS_REQUEST, ADMIN_LOCK_USER,
-                    ADMIN_UNLOCK_USER, ADMIN_KICK_USER, ADMIN_MATCHES_REQUEST -> true;
-            default -> false;
-        };
-    }
-
-    private static List<MatchSort> matchSorts(JsonNode data) {
-        List<MatchSort> sorts = new ArrayList<>();
-        for (JsonNode item : data.path("sorts")) {
-            try {
-                var field = MatchSort.Field.valueOf(
-                        item.path("field").asText().toUpperCase(Locale.ROOT));
-                sorts.add(new MatchSort(field,
-                        "ASC".equalsIgnoreCase(item.path("direction").asText())));
-            } catch (IllegalArgumentException ignored) {
-                // Chỉ chấp nhận tên cột trong danh sách trắng.
-            }
-        }
-        return sorts;
-    }
-
-    private static List<RankingSort> rankingSorts(JsonNode data) {
-        List<RankingSort> sorts = new ArrayList<>();
-        EnumSet<RankingSort.Field> used = EnumSet.noneOf(RankingSort.Field.class);
-        for (JsonNode item : data.path("sorts")) {
-            try {
-                RankingSort.Field field = RankingSort.Field.valueOf(
-                        item.path("field").asText().toUpperCase(Locale.ROOT));
-                if (!used.add(field))
-                    continue;
-                boolean ascending = "ASC".equalsIgnoreCase(item.path("direction").asText());
-                sorts.add(new RankingSort(field, ascending));
-            } catch (IllegalArgumentException ignored) {
-                // Bỏ qua tiêu chí không thuộc danh sách trắng phía server.
-            }
-        }
-        return sorts;
-    }
-
-    private static String safeMessage(Exception exception) {
-        return exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
-    }
-
-    private static void success(ClientConnection client, NetworkMessage request, String message) {
-        client.send(NetworkMessage.reply(MessageType.SUCCESS, request.requestId(),
-                JsonProtocol.object().put("message", message)));
-    }
-
-    private static void error(ClientConnection client, NetworkMessage request, String message) {
-        client.send(NetworkMessage.reply(MessageType.ERROR, request.requestId(),
-                JsonProtocol.object().put("message", message)));
+        accounts.disconnected(client);
     }
 
     @Override

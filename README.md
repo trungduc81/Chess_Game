@@ -113,6 +113,13 @@ Server và Client là hai chương trình độc lập nên phải chạy bằng
 - Server: `vn.edu.ltm.chess.server.ServerMain`
 - Client: `vn.edu.ltm.chess.client.ClientMain`
 
+## Tổ chức source
+
+Server vẫn chạy một tiến trình/cổng TCP. `ChessServer` định tuyến tới `AccountService`,
+`GameService`, `AdminService` và `MatchQueryService`. Client dùng `ClientNetworkService`
+để kết nối/gửi trên luồng nền, còn JavaFX chỉ xử lý giao diện.
+Xem [kiến trúc chi tiết](docs/ARCHITECTURE.md) và [phân công module](docs/PHAN_CONG_MODULE.md).
+
 ## Quy ước dữ liệu
 
 - Một nước đi trong CSDL là một **ply** (một lượt của một người).
